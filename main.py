@@ -3,6 +3,7 @@
 ربات مدیریت ساب‌لینک v2 – نسخه Railway + Cloudflare API
 - بازنویسی شده برای اجرای مستقل در پایتون استاندارد
 - اتصال به D1 و KV از طریق Cloudflare API
+- مجهز به Health Check، Rebranding و Permanent Ad
 """
 
 import os
@@ -13,7 +14,7 @@ import datetime
 import traceback
 import asyncio
 import httpx
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote
 from fastapi import FastAPI, Request, Response
 import uvicorn
 
@@ -27,6 +28,9 @@ CF_ACCOUNT_ID = os.getenv("CF_ACCOUNT_ID", "")
 CF_API_TOKEN = os.getenv("CF_API_TOKEN", "")
 CF_D1_ID = os.getenv("CF_D1_ID", "")
 CF_KV_ID = os.getenv("CF_KV_ID", "")
+
+# کانفیگ تبلیغاتی ثابت (Feature 3)
+PERMANENT_AD_CONFIG = os.getenv("PERMANENT_AD_CONFIG", "")
 
 CF_HEADERS = {
     "Authorization": f"Bearer {CF_API_TOKEN}",
@@ -139,6 +143,122 @@ async def query_db(sql, *args):
 
 async def execute_db(sql, *args):
     return await query_db(sql, *args)
+
+# ---------------------------------------------------------------------
+# 🔄 توابع Rebranding و Health Check (Features 1 & 2)
+# ---------------------------------------------------------------------
+def get_flag(country_code):
+    if not country_code or len(country_code) != 2: 
+        return "🌐"
+    return chr(ord(country_code[0].upper()) + 127397) + chr(ord(country_code[1].upper()) + 127397)
+
+async def get_location_info(host):
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"http://ip-api.com/json/{host}", timeout=5.0)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("status") == "success":
+                    cc = data.get("countryCode", "")
+                    country = data.get("country", "Unknown")
+                    return get_flag(cc), country
+    except Exception:
+        pass
+    return "🌐", "Unknown"
+
+async def rebrand_config(config_text: str) -> str:
+    config_text = config_text.strip()
+    if not config_text: 
+        return config_text
+
+    brand_suffix = "|@TechNowVpn"
+    try:
+        if config_text.startswith("vmess://"):
+            b64_str = config_text[8:]
+            # رفع مشکل پدینگ در Base64
+            b64_str += "=" * ((4 - len(b64_str) % 4) % 4)
+            decoded = base64.b64decode(b64_str).decode("utf-8")
+            data = json.loads(decoded)
+            
+            host = data.get("add", "")
+            flag, country = await get_location_info(host)
+            data["ps"] = f"{flag} {country} {brand_suffix}"
+            
+            encoded = base64.b64encode(json.dumps(data).encode("utf-8")).decode("utf-8")
+            return f"vmess://{encoded}"
+            
+        else: 
+            # هندل کردن vless, trojan, ss
+            parsed = urlparse(config_text)
+            if parsed.scheme in ["vless", "trojan", "ss"]:
+                host = parsed.hostname
+                flag, country = await get_location_info(host)
+                new_fragment = f"{flag} {country} {brand_suffix}"
+                
+                # جایگزین کردن نام قبلی با حذف قطعه بعد از '#'
+                base_url = config_text.split("#")[0]
+                return f"{base_url}#{quote(new_fragment)}"
+    except Exception as e:
+        print(f"Rebrand Error: {e}")
+        
+    return config_text
+
+def extract_host_port(config_text):
+    try:
+        if config_text.startswith("vmess://"):
+            b64_str = config_text[8:]
+            b64_str += "=" * ((4 - len(b64_str) % 4) % 4)
+            decoded = base64.b64decode(b64_str).decode("utf-8")
+            data = json.loads(decoded)
+            return data.get("add"), int(data.get("port", 443))
+        else:
+            parsed = urlparse(config_text)
+            if parsed.scheme in ["vless", "trojan", "ss"]:
+                return parsed.hostname, parsed.port or 443
+    except Exception:
+        pass
+    return None, None
+
+async def tcp_ping(host, port):
+    if not host or not port: 
+        return False
+    try:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(host, port), timeout=3.0
+        )
+        writer.close()
+        await writer.wait_closed()
+        return True
+    except Exception:
+        return False
+
+async def health_check_task():
+    await asyncio.sleep(15)  # تاخیر اولیه هنگام استارت‌آپ سرور
+    while True:
+        try:
+            res = await query_db("SELECT id, config_text FROM configs WHERE is_active = 1")
+            configs = get_rows(res)
+            deleted_any = False
+            
+            for cfg in configs:
+                cid = cfg["id"]
+                txt = cfg["config_text"]
+                host, port = extract_host_port(txt)
+                
+                if host and port:
+                    is_alive = await tcp_ping(host, port)
+                    if not is_alive:
+                        await execute_db("DELETE FROM configs WHERE id = ?", cid)
+                        deleted_any = True
+                        print(f"Health Check: Config {cid} removed (Dead host: {host}:{port})")
+                        
+            if deleted_any:
+                await delete_kv("cached_configs_payload")
+                
+        except Exception as e:
+            print(f"Health check error: {e}")
+            
+        await asyncio.sleep(1800)  # اجرا هر 30 دقیقه
 
 # ---------------------------------------------------------------------
 # 📨 ارتباط با تلگرام
@@ -520,7 +640,10 @@ async def handle_state(user, state, text, chat_id, is_admin_user):
 
     if is_admin_user:
         if state == "waiting_for_config":
-            await execute_db("INSERT INTO configs (config_text) VALUES (?)", text)
+            # Feature 2: اعمال Rebranding قبل از ذخیره کانفیگ در دیتابیس
+            processed_text = await rebrand_config(text)
+            await execute_db("INSERT INTO configs (config_text) VALUES (?)", processed_text)
+            
             await delete_kv("cached_configs_payload")
             markup = {"inline_keyboard": [[{"text": "❌ خروج", "callback_data": "adm_stop_config"}]]}
             await call_telegram("sendMessage", {
@@ -1012,7 +1135,9 @@ app = FastAPI()
 @app.on_event("startup")
 async def startup_event():
     await init_database_if_needed()
-    print("🚀 Bot Server Started!")
+    # Feature 1: استارت تسک Health Check همزمان با بالا آمدن سرور
+    asyncio.create_task(health_check_task())
+    print("🚀 Bot Server Started with Health Check System!")
 
 @app.post("/webhook")
 async def handle_webhook(request: Request):
@@ -1042,7 +1167,17 @@ async def handle_sublink(token: str):
     if cached_payload is None:
         cfg_res = await query_db("SELECT config_text FROM configs WHERE is_active = 1")
         confs = get_rows(cfg_res)
-        payload_lines = [c["config_text"].strip() for c in confs if c["config_text"].strip()]
+        
+        payload_lines = []
+        
+        # Feature 3: اضافه شدن کانفیگ تبلیغاتی همیشگی به صدر ساب‌لینک
+        if PERMANENT_AD_CONFIG:
+            payload_lines.append(PERMANENT_AD_CONFIG.strip())
+            
+        for c in confs:
+            if c["config_text"].strip():
+                payload_lines.append(c["config_text"].strip())
+                
         combined = "\n".join(payload_lines)
         cached_payload = base64.b64encode(combined.encode("utf-8")).decode("utf-8")
         await put_kv("cached_configs_payload", cached_payload, expiration_ttl=300)
