@@ -1,4 +1,3 @@
-            print(f"Error parse update: {str(e)}")
 # -*- coding: utf-8 -*-
 """
 ربات مدیریت ساب‌لینک v2 – نسخه Railway + Cloudflare API
