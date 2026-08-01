@@ -10,6 +10,7 @@ import json
 import base64
 import uuid
 import datetime
+import time
 import traceback
 import asyncio
 import httpx
@@ -124,16 +125,17 @@ def get_first_row(db_res):
     rows = get_rows(db_res)
     return rows[0] if rows else None
 
+HTTP_CLIENT = httpx.AsyncClient(timeout=10.0)
+
 async def query_db(sql, *args):
     url = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/d1/database/{CF_D1_ID}/query"
     payload = {"sql": sql, "params": list(args)}
-    async with httpx.AsyncClient() as client:
-        try:
-            res = await client.post(url, headers=CF_HEADERS, json=payload, timeout=10.0)
-            return res.json()
-        except Exception as e:
-            print(f"D1 API Error: {str(e)}")
-            return {"success": False, "error": str(e)}
+    try:
+        res = await HTTP_CLIENT.post(url, headers=CF_HEADERS, json=payload)
+        return res.json()
+    except Exception as e:
+        print(f"D1 API Error: {str(e)}")
+        return {"success": False, "error": str(e)}
 
 async def execute_db(sql, *args):
     return await query_db(sql, *args)
@@ -143,26 +145,24 @@ async def execute_db(sql, *args):
 # ---------------------------------------------------------------------
 async def call_telegram(method, payload):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/{method}"
-    async with httpx.AsyncClient() as client:
-        try:
-            response = await client.post(url, json=payload, timeout=10.0)
-            return response.json()
-        except Exception as e:
-            print(f"Telegram API error: {str(e)}")
-            return {"ok": False, "description": str(e)}
+    try:
+        response = await HTTP_CLIENT.post(url, json=payload)
+        return response.json()
+    except Exception as e:
+        print(f"Telegram API error: {str(e)}")
+        return {"ok": False, "description": str(e)}
 
 # ---------------------------------------------------------------------
 # ⚙️ مدیریت تنظیمات با کش KV کلادفلر
 # ---------------------------------------------------------------------
 async def get_kv(key):
     url = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/storage/kv/namespaces/{CF_KV_ID}/values/{key}"
-    async with httpx.AsyncClient() as client:
-        try:
-            r = await client.get(url, headers={"Authorization": f"Bearer {CF_API_TOKEN}"})
-            if r.status_code == 200:
-                return r.text
-        except Exception:
-            pass
+    try:
+        r = await HTTP_CLIENT.get(url, headers={"Authorization": f"Bearer {CF_API_TOKEN}"})
+        if r.status_code == 200:
+            return r.text
+    except Exception:
+        pass
     return None
 
 async def put_kv(key, value, expiration_ttl=None):
@@ -170,36 +170,39 @@ async def put_kv(key, value, expiration_ttl=None):
     params = {}
     if expiration_ttl:
         params['expiration_ttl'] = expiration_ttl
-    async with httpx.AsyncClient() as client:
-        try:
-            await client.put(url, headers={"Authorization": f"Bearer {CF_API_TOKEN}"}, params=params, content=str(value))
-        except Exception:
-            pass
+    try:
+        await HTTP_CLIENT.put(url, headers={"Authorization": f"Bearer {CF_API_TOKEN}"}, params=params, content=str(value))
+    except Exception:
+        pass
 
 async def delete_kv(key):
     url = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/storage/kv/namespaces/{CF_KV_ID}/values/{key}"
-    async with httpx.AsyncClient() as client:
-        try:
-            await client.delete(url, headers={"Authorization": f"Bearer {CF_API_TOKEN}"})
-        except Exception:
-            pass
+    try:
+        await HTTP_CLIENT.delete(url, headers={"Authorization": f"Bearer {CF_API_TOKEN}"})
+    except Exception:
+        pass
+
+CACHE = {}
+CACHE_TTL = {}
 
 async def get_setting(key, default=None):
-    cached = await get_kv(f"setting_{key}")
-    if cached is not None:
-        return cached
+    now = time.time()
+    if key in CACHE and now < CACHE_TTL.get(key, 0):
+        return CACHE[key]
 
     res = await query_db("SELECT value FROM settings WHERE key = ?", key)
     row = get_first_row(res)
     if row:
         value = row["value"]
-        await put_kv(f"setting_{key}", value, expiration_ttl=600)
+        CACHE[key] = value
+        CACHE_TTL[key] = now + 60
         return value
     return default
 
 async def set_setting(key, value):
     await execute_db("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", key, str(value))
-    await put_kv(f"setting_{key}", str(value), expiration_ttl=600)
+    CACHE[key] = str(value)
+    CACHE_TTL[key] = time.time() + 60
 
 # ---------------------------------------------------------------------
 # 🗄️ مقداردهی اولیه دیتابیس و توابع پردازش کانفیگ
@@ -388,13 +391,10 @@ async def get_or_create_user(telegram_id, referred_by=None, from_user=None):
     res = await query_db("SELECT * FROM users WHERE telegram_id = ?", str(telegram_id))
     user = get_first_row(res)
     
-    username = ""
-    full_name = ""
-    if from_user:
-        username = f"@{from_user.get('username')}" if from_user.get("username") else "ندارد"
-        first_name = from_user.get("first_name", "")
-        last_name = from_user.get("last_name", "")
-        full_name = f"{first_name} {last_name}".strip()
+    username = f"@{from_user.get('username')}" if from_user and from_user.get("username") else "ندارد"
+    first_name = from_user.get("first_name", "") if from_user else ""
+    last_name = from_user.get("last_name", "") if from_user else ""
+    full_name = f"{first_name} {last_name}".strip()
 
     if not user:
         ref_id = None
@@ -402,20 +402,19 @@ async def get_or_create_user(telegram_id, referred_by=None, from_user=None):
             ref_res = await query_db("SELECT id FROM users WHERE telegram_id = ?", str(referred_by))
             if get_first_row(ref_res):
                 ref_id = str(referred_by)
-        if ref_id:
-            await execute_db("INSERT INTO users (telegram_id, referred_by, username, full_name) VALUES (?, ?, ?, ?)", str(telegram_id), ref_id, username, full_name)
-        else:
-            await execute_db("INSERT INTO users (telegram_id, username, full_name) VALUES (?, ?, ?)", str(telegram_id), username, full_name)
+                
+        await execute_db("INSERT INTO users (telegram_id, referred_by, username, full_name) VALUES (?, ?, ?, ?)", str(telegram_id), ref_id, username, full_name)
         res = await query_db("SELECT * FROM users WHERE telegram_id = ?", str(telegram_id))
         user = get_first_row(res)
     else:
-        # Update user names
-        if from_user:
+        if user.get("username") != username or user.get("full_name") != full_name:
             await execute_db("UPDATE users SET username = ?, full_name = ? WHERE id = ?", username, full_name, user["id"])
             user["username"] = username
             user["full_name"] = full_name
             
     return user
+
+MEMBERSHIP_CACHE = {}
 
 async def check_channel_membership(telegram_id):
     force_channels = await get_setting("force_channels", "")
@@ -423,9 +422,18 @@ async def check_channel_membership(telegram_id):
         return True
     
     channels = [c.strip() for c in force_channels.split(",") if c.strip()]
-    for channel in channels:
+    now = time.time()
+    
+    for channel_data in channels:
+        parts = channel_data.split("|")
+        channel = parts[1].strip() if len(parts) > 1 else parts[0].strip()
+        
         if not channel.startswith("@") and not channel.startswith("-100"):
             channel = f"@{channel}"
+            
+        cache_key = f"{telegram_id}_{channel}"
+        if cache_key in MEMBERSHIP_CACHE and now < MEMBERSHIP_CACHE[cache_key]:
+            continue
         
         res = await call_telegram("getChatMember", {
             "chat_id": channel,
@@ -436,14 +444,13 @@ async def check_channel_membership(telegram_id):
         status = res["result"].get("status")
         if status not in ["creator", "administrator", "member"]:
             return False
+            
+        MEMBERSHIP_CACHE[cache_key] = now + 120
     return True
 
 async def build_sub_url_async(token):
-    # Retrieve current base url dynamically or rely on railway domain
-    # Since fastAPI doesn't easily know its public railway URL in this context without request object, 
-    # we'll assume a railway domain setup or simply relative.
-    domain = os.environ.get("RAILWAY_STATIC_URL", "your-app.up.railway.app")
-    domain = domain.replace("https://", "").replace("http://", "")
+    domain = os.environ.get("APP_BASE_URL") or os.environ.get("PUBLIC_BASE_URL") or os.environ.get("RAILWAY_STATIC_URL", "your-app.up.railway.app")
+    domain = domain.replace("https://", "").replace("http://", "").strip("/")
     return f"https://{domain}/sub/{token}"
 
 # ---------------------------------------------------------------------
@@ -487,9 +494,13 @@ async def send_membership_requirement(chat_id):
     channels = [c.strip() for c in force_channels.split(",") if c.strip()]
     
     kb = []
-    for ch in channels:
-        ch_clean = ch.replace('@', '')
-        kb.append([{"text": f"📢 عضویت در {ch}", "url": f"https://t.me/{ch_clean}"}])
+    for channel_data in channels:
+        parts = channel_data.split("|")
+        ch_title = parts[0].strip() if len(parts) > 1 else parts[0].strip()
+        ch_id = parts[1].strip() if len(parts) > 1 else parts[0].strip()
+        
+        ch_clean = ch_id.replace('@', '')
+        kb.append([{"text": f"📢 عضویت در {ch_title}", "url": f"https://t.me/{ch_clean}"}])
     kb.append([{"text": "✅ عضو شدم (تایید)", "callback_data": "chk_membership"}])
     
     markup = {"inline_keyboard": kb}
@@ -504,13 +515,21 @@ async def credit_referrer_if_pending(user, chat_id):
     if ref_id and not str(ref_id).endswith("_rewarded"):
         reward_val = await get_setting("referral_reward", "2000")
         reward = safe_int(reward_val, 2000)
-        await execute_db("UPDATE users SET balance = balance + ? WHERE telegram_id = ?", reward, ref_id)
-        await call_telegram("sendMessage", {
-            "chat_id": int(ref_id),
-            "text": f"🎉 یکی از کاربران با لینک دعوت شما عضو شد و مبلغ {reward:,} تومان به موجودی شما افزوده گردید!"
-        })
+        
         new_ref_status = f"{ref_id}_rewarded"
-        await execute_db("UPDATE users SET referred_by = ? WHERE id = ?", new_ref_status, user["id"])
+        update_res = await execute_db("UPDATE users SET referred_by = ? WHERE id = ? AND referred_by = ?", new_ref_status, user["id"], ref_id)
+        
+        if update_res and update_res.get("success") and update_res.get("result", [{}])[0].get("meta", {}).get("changes", 0) > 0:
+            await execute_db("UPDATE users SET balance = balance + ? WHERE telegram_id = ?", reward, ref_id)
+            inviter_res = await query_db("SELECT balance FROM users WHERE telegram_id = ?", ref_id)
+            inviter = get_first_row(inviter_res)
+            new_balance = inviter["balance"] if inviter else 0
+            
+            msg = f"🎉 یکی از کاربران با لینک دعوت شما عضو شد!\n\nمبلغ {reward:,} تومان به موجودی شما افزوده گردید.\n💰 موجودی فعلی شما: {new_balance:,} تومان"
+            await call_telegram("sendMessage", {
+                "chat_id": int(ref_id),
+                "text": msg
+            })
 
 # ---------------------------------------------------------------------
 # 🧩 هندلرهای کاربر
@@ -648,7 +667,7 @@ async def create_subscription_from_plan(plan_id, user_id):
 async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_admin):
     text = message.get("text", "").strip()
     
-    if text in ["❌ خروج / اتمام ارسال", "لغو", "/cancel"]:
+    if text in ["❌ خروج / اتمام ارسال", "لغو", "/cancel", "🔚 پایان پشتیبانی"]:
         await execute_db("UPDATE users SET state = NULL, plan_data = NULL WHERE id = ?", user["id"])
         await call_telegram("sendMessage", {"chat_id": chat_id, "text": "عملیات لغو شد."})
         if is_admin_user:
@@ -671,6 +690,9 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
             return True
 
         if state == "waiting_for_broadcast":
+            if not text:
+                await call_telegram("sendMessage", {"chat_id": chat_id, "text": "❌ پیام باید دارای متن باشد. مجددا ارسال کنید یا لغو کنید:"})
+                return True
             await execute_db("UPDATE users SET state = ?, plan_data = ? WHERE id = ?", "waiting_for_broadcast_confirm", text, user["id"])
             markup = {"inline_keyboard": [[{"text": "✅ تایید و ارسال", "callback_data": "adm_broadcast_yes"}, {"text": "❌ لغو", "callback_data": "admin_return"}]]}
             await call_telegram("sendMessage", {"chat_id": chat_id, "text": f"آیا از ارسال این پیام به همه کاربران اطمینان دارید؟\n\nمتن پیام:\n{text}", "reply_markup": markup})
@@ -739,9 +761,12 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
             return True
             
         if state == "waiting_for_new_channel":
+            new_ch = text.strip()
+            if "|" not in new_ch:
+                await call_telegram("sendMessage", {"chat_id": chat_id, "text": "❌ فرمت اشتباه است. لطفاً به شکل زیر بفرستید:\nعنوان|@Channel"})
+                return True
             cur_ch = await get_setting("force_channels", "")
             ch_list = [c.strip() for c in cur_ch.split(",") if c.strip()]
-            new_ch = text.strip()
             if new_ch not in ch_list:
                 ch_list.append(new_ch)
                 await set_setting("force_channels", ",".join(ch_list))
@@ -764,18 +789,22 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
         if state.startswith("waiting_plan_"):
             parts = state.split("_")
             step = parts[2] if len(parts) > 2 else "name"
-            plan_data = json.loads(user.get("plan_data") or "{}")
+            try:
+                plan_data = json.loads(user.get("plan_data") or "{}")
+            except:
+                plan_data = {}
+                
             if step == "name":
                 plan_data["name"] = text
-                await execute_db("UPDATE users SET state = 'waiting_plan_price', plan_data = ? WHERE id = ?", json.dumps(plan_data), user["id"])
-                await call_telegram("sendMessage", {"chat_id": chat_id, "text": STRINGS["plan_add_step2"]})
+                await execute_db("UPDATE users SET state = 'waiting_plan_maxusers', plan_data = ? WHERE id = ?", json.dumps(plan_data), user["id"])
+                await call_telegram("sendMessage", {"chat_id": chat_id, "text": STRINGS["plan_add_step4"]})
                 return True
-            elif step == "price":
-                price = safe_int(text)
-                if price <= 0:
-                    await call_telegram("sendMessage", {"chat_id": chat_id, "text": "❌ قیمت باید عدد مثبت باشد:"})
+            elif step == "maxusers":
+                max_users = safe_int(text)
+                if max_users <= 0:
+                    await call_telegram("sendMessage", {"chat_id": chat_id, "text": "❌ محدودیت کاربر باید عدد مثبت باشد:"})
                     return True
-                plan_data["price"] = price
+                plan_data["max_users"] = max_users
                 await execute_db("UPDATE users SET state = 'waiting_plan_duration', plan_data = ? WHERE id = ?", json.dumps(plan_data), user["id"])
                 await call_telegram("sendMessage", {"chat_id": chat_id, "text": STRINGS["plan_add_step3"]})
                 return True
@@ -785,17 +814,17 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
                     await call_telegram("sendMessage", {"chat_id": chat_id, "text": "❌ مدت باید عدد مثبت باشد:"})
                     return True
                 plan_data["duration_days"] = dur
-                await execute_db("UPDATE users SET state = 'waiting_plan_maxusers', plan_data = ? WHERE id = ?", json.dumps(plan_data), user["id"])
-                await call_telegram("sendMessage", {"chat_id": chat_id, "text": STRINGS["plan_add_step4"]})
+                await execute_db("UPDATE users SET state = 'waiting_plan_price', plan_data = ? WHERE id = ?", json.dumps(plan_data), user["id"])
+                await call_telegram("sendMessage", {"chat_id": chat_id, "text": STRINGS["plan_add_step2"]})
                 return True
-            elif step == "maxusers":
-                max_users = safe_int(text)
-                if max_users <= 0:
-                    await call_telegram("sendMessage", {"chat_id": chat_id, "text": "❌ محدودیت کاربر باید عدد مثبت باشد:"})
+            elif step == "price":
+                price = safe_int(text)
+                if price <= 0:
+                    await call_telegram("sendMessage", {"chat_id": chat_id, "text": "❌ قیمت باید عدد مثبت باشد:"})
                     return True
                 name = plan_data.get("name", "بدون نام")
-                price = plan_data.get("price", 0)
-                duration = plan_data.get("duration_days", 0)
+                max_users = plan_data.get("max_users", 1)
+                duration = plan_data.get("duration_days", 30)
                 await execute_db("""
                     INSERT INTO plans (name, price, duration_days, max_users, is_active)
                     VALUES (?, ?, ?, ?, 1)
@@ -986,8 +1015,16 @@ async def process_callback(callback):
             await call_telegram("sendMessage", {"chat_id": chat_id, "text": "❌ پلن مورد نظر فعال نیست."})
             return
             
-        markup = {"inline_keyboard": [[{"text": "✅ تایید خرید", "callback_data": f"confirm_buy_{plan_id}"}, {"text": "❌ لغو", "callback_data": "cancel_action"}]]}
-        await call_telegram("sendMessage", {"chat_id": chat_id, "text": f"آیا از خرید این پلن به مبلغ {plan['price']:,} تومان اطمینان دارید؟", "reply_markup": markup})
+        txt = (
+            f"🧾 **پیش‌فاکتور خرید**\n\n"
+            f"📌 نام پلن: {plan['name']}\n"
+            f"📆 مدت اعتبار: {plan['duration_days']} روز\n"
+            f"👥 محدودیت کاربر: {plan['max_users']} کاربر\n"
+            f"💰 قیمت: {plan['price']:,} تومان\n\n"
+            "آیا از خرید خود اطمینان دارید؟"
+        )
+        markup = {"inline_keyboard": [[{"text": "✅ تایید خرید", "callback_data": f"confirm_buy_{plan_id}"}, {"text": "❌ انصراف", "callback_data": "cancel_action"}]]}
+        await call_telegram("sendMessage", {"chat_id": chat_id, "text": txt, "parse_mode": "Markdown", "reply_markup": markup})
         return
         
     if data.startswith("confirm_buy_"):
@@ -1088,19 +1125,30 @@ async def process_callback(callback):
         
     if data == "adm_broadcast_yes":
         msg_text = user.get("plan_data")
+        if not msg_text:
+            await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "❌ پیام خالی است.", "show_alert": True})
+            return
         await execute_db("UPDATE users SET state = NULL, plan_data = NULL WHERE id = ?", user["id"])
         all_users_res = await query_db("SELECT telegram_id FROM users")
         all_users = get_rows(all_users_res)
         await call_telegram("sendMessage", {"chat_id": chat_id, "text": STRINGS["broadcast_sending"]})
+        
         success = 0
-        for u in all_users:
-            res = await call_telegram("sendMessage", {
-                "chat_id": int(u["telegram_id"]),
-                "text": msg_text
-            })
-            if res.get("ok"):
-                success += 1
-            await asyncio.sleep(0.05)
+        chunk_size = 30
+        for i in range(0, len(all_users), chunk_size):
+            chunk = all_users[i:i+chunk_size]
+            tasks = []
+            for u in chunk:
+                tasks.append(call_telegram("sendMessage", {
+                    "chat_id": int(u["telegram_id"]),
+                    "text": msg_text
+                }))
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for res in results:
+                if isinstance(res, dict) and res.get("ok"):
+                    success += 1
+            await asyncio.sleep(1.0)
+            
         await call_telegram("sendMessage", {
             "chat_id": chat_id,
             "text": STRINGS["broadcast_done"].format(success=success, total=len(all_users)),
@@ -1207,7 +1255,7 @@ async def process_callback(callback):
     if data == "adm_manage_plans": return await show_plan_management(chat_id)
 
     if data == "adm_add_plan":
-        await execute_db("UPDATE users SET state = 'waiting_plan_name', plan_data = NULL WHERE id = ?", user["id"])
+        await execute_db("UPDATE users SET state = 'waiting_plan_name', plan_data = ? WHERE id = ?", "{}", user["id"])
         await call_telegram("sendMessage", {"chat_id": chat_id, "text": STRINGS["plan_add_step1"]})
         return
 
@@ -1286,12 +1334,11 @@ async def process_message(message):
         return
 
     # Clear state on command or end support
-    if text in ["/start", "🔚 پایان پشتیبانی"]:
+    if text in ["/start", "🔚 پایان پشتیبانی"] or text.startswith("/start "):
         await execute_db("UPDATE users SET state = NULL, plan_data = NULL WHERE id = ?", user["id"])
         user["state"] = None
         if text == "🔚 پایان پشتیبانی":
             await call_telegram("sendMessage", {"chat_id": chat_id, "text": STRINGS["support_session_ended"], "reply_markup": {"remove_keyboard": True}})
-            # Send main menu afterward
             if is_admin_user:
                 await show_admin_panel(chat_id)
             else:
@@ -1331,7 +1378,7 @@ async def process_message(message):
         if await handle_state(user, state, message, chat_id, is_admin_user, actual_is_admin):
             return
 
-    if text == "/start":
+    if text.startswith("/start"):
         await credit_referrer_if_pending(user, chat_id)
         if is_admin_user:
             await show_admin_panel(chat_id)
