@@ -17,7 +17,6 @@ import httpx
 import re
 import time
 import urllib.parse
-import html
 from fastapi import FastAPI, Request, Response
 import uvicorn
 
@@ -33,9 +32,7 @@ CF_D1_ID = os.getenv("CF_D1_ID", "")
 CF_KV_ID = os.getenv("CF_KV_ID", "")
 
 # متغیر محیطی برای دامنه اصلی ربات
-APP_BASE_URL = os.getenv("APP_BASE_URL") or os.getenv("RAILWAY_PUBLIC_DOMAIN") or os.getenv("RAILWAY_STATIC_URL") or "https://technowvpnbot.ariyacompany-io.workers.dev"
-if not APP_BASE_URL.startswith("http"):
-    APP_BASE_URL = f"https://{APP_BASE_URL}"
+APP_BASE_URL = os.getenv("APP_BASE_URL", "https://technowvpnbot.ariyacompany-io.workers.dev")
 
 CF_HEADERS = {
     "Authorization": f"Bearer {CF_API_TOKEN}",
@@ -111,7 +108,7 @@ STRINGS = {
     "user_not_found": "❌ کاربر یافت نشد.",
     "user_info": (
         "👤 جزئیات حساب کاربر:\n\n"
-        "🆔 آیدی تلگرام: <code>{tg_id}</code>\n"
+        "🆔 آیدی تلگرام: `{tg_id}`\n"
         "👤 نام و کاربری: {full_name} | {username}\n"
         "💰 موجودی کیف پول: {balance:,} تومان\n"
         "🎁 استفاده از تست رایگان: {trial_status}"
@@ -740,8 +737,8 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
             await execute_db("UPDATE users SET state = NULL WHERE id = ?", user["id"])
             info = STRINGS["user_info"].format(
                 tg_id=target_user["telegram_id"],
-                full_name=html.escape(target_user["full_name"] or "ندارد"),
-                username=html.escape(target_user["username"] or "ندارد"),
+                full_name=target_user["full_name"] or "ندارد",
+                username=target_user["username"] or "ندارد",
                 balance=target_user["balance"],
                 trial_status="بله" if target_user["has_used_trial"] else "خیر"
             )
@@ -755,7 +752,7 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
             await call_telegram("sendMessage", {
                 "chat_id": chat_id,
                 "text": info,
-                "parse_mode": "HTML",
+                "parse_mode": "Markdown",
                 "reply_markup": markup
             })
             return True
@@ -830,15 +827,15 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
                 
             if step == "name":
                 plan_data["name"] = text
-                await execute_db("UPDATE users SET state = 'waiting_plan_maxusers', plan_data = ? WHERE id = ?", json.dumps(plan_data), user["id"])
-                await call_telegram("sendMessage", {"chat_id": chat_id, "text": STRINGS["plan_add_step4"]})
+                await execute_db("UPDATE users SET state = 'waiting_plan_price', plan_data = ? WHERE id = ?", json.dumps(plan_data), user["id"])
+                await call_telegram("sendMessage", {"chat_id": chat_id, "text": STRINGS["plan_add_step2"]})
                 return True
-            elif step == "maxusers":
-                max_users = safe_int(text)
-                if max_users <= 0:
-                    await call_telegram("sendMessage", {"chat_id": chat_id, "text": "❌ محدودیت کاربر باید عدد مثبت باشد:"})
+            elif step == "price":
+                price = safe_int(text)
+                if price <= 0:
+                    await call_telegram("sendMessage", {"chat_id": chat_id, "text": "❌ قیمت باید عدد مثبت باشد:"})
                     return True
-                plan_data["max_users"] = max_users
+                plan_data["price"] = price
                 await execute_db("UPDATE users SET state = 'waiting_plan_duration', plan_data = ? WHERE id = ?", json.dumps(plan_data), user["id"])
                 await call_telegram("sendMessage", {"chat_id": chat_id, "text": STRINGS["plan_add_step3"]})
                 return True
@@ -848,16 +845,16 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
                     await call_telegram("sendMessage", {"chat_id": chat_id, "text": "❌ مدت باید عدد مثبت باشد:"})
                     return True
                 plan_data["duration_days"] = dur
-                await execute_db("UPDATE users SET state = 'waiting_plan_price', plan_data = ? WHERE id = ?", json.dumps(plan_data), user["id"])
-                await call_telegram("sendMessage", {"chat_id": chat_id, "text": STRINGS["plan_add_step2"]})
+                await execute_db("UPDATE users SET state = 'waiting_plan_maxusers', plan_data = ? WHERE id = ?", json.dumps(plan_data), user["id"])
+                await call_telegram("sendMessage", {"chat_id": chat_id, "text": STRINGS["plan_add_step4"]})
                 return True
-            elif step == "price":
-                price = safe_int(text)
-                if price <= 0:
-                    await call_telegram("sendMessage", {"chat_id": chat_id, "text": "❌ قیمت باید عدد مثبت باشد:"})
+            elif step == "maxusers":
+                max_users = safe_int(text)
+                if max_users <= 0:
+                    await call_telegram("sendMessage", {"chat_id": chat_id, "text": "❌ محدودیت کاربر باید عدد مثبت باشد:"})
                     return True
                 name = plan_data.get("name", "بدون نام")
-                max_users = plan_data.get("max_users", 1)
+                price = plan_data.get("price", 0)
                 duration = plan_data.get("duration_days", 0)
                 await execute_db("""
                     INSERT INTO plans (name, price, duration_days, max_users, is_active)
@@ -1054,16 +1051,8 @@ async def process_callback(callback):
             await call_telegram("sendMessage", {"chat_id": chat_id, "text": "❌ پلن مورد نظر فعال نیست."})
             return
             
-        invoice_txt = (
-            "🧾 فاکتور نهایی خرید سرویس:\n\n"
-            f"📌 عنوان پلن: {plan['name']}\n"
-            f"📆 مدت اعتبار: {plan['duration_days']} روز\n"
-            f"👥 محدودیت کاربر: {plan['max_users']} کاربر\n"
-            f"💰 مبلغ نهایی: {plan['price']:,} تومان\n\n"
-            "آیا از خرید این سرویس اطمینان دارید؟"
-        )
-        markup = {"inline_keyboard": [[{"text": "✅ تأیید خرید", "callback_data": f"confirm_buy_{plan_id}"}, {"text": "❌ انصراف", "callback_data": "cancel_action"}]]}
-        await call_telegram("sendMessage", {"chat_id": chat_id, "text": invoice_txt, "reply_markup": markup})
+        markup = {"inline_keyboard": [[{"text": "✅ تایید خرید", "callback_data": f"confirm_buy_{plan_id}"}, {"text": "❌ لغو", "callback_data": "cancel_action"}]]}
+        await call_telegram("sendMessage", {"chat_id": chat_id, "text": f"آیا از خرید این پلن به مبلغ {plan['price']:,} تومان اطمینان دارید؟", "reply_markup": markup})
         return
         
     if data.startswith("confirm_buy_"):
@@ -1118,9 +1107,11 @@ async def process_callback(callback):
             await call_telegram("sendMessage", {"chat_id": chat_id, "text": "هیچ کانفیگی موجود نیست."})
             return
         for c in configs:
+            status_emoji = "🟢 فعال" if c["is_active"] else "🔴 غیرفعال"
             markup = {
                 "inline_keyboard": [
-                    [{"text": "❌ حذف", "callback_data": f"adm_cfg_del_req_{c['id']}"}]
+                    [{"text": f"تغییر وضعیت ({status_emoji})", "callback_data": f"adm_cfg_toggle_{c['id']}"},
+                     {"text": "❌ حذف", "callback_data": f"adm_cfg_del_req_{c['id']}"}]
                 ]
             }
             await call_telegram("sendMessage", {
@@ -1129,6 +1120,17 @@ async def process_callback(callback):
                 "parse_mode": "Markdown",
                 "reply_markup": markup
             })
+        return
+
+    if data.startswith("adm_cfg_toggle_"):
+        cfg_id = data.replace("adm_cfg_toggle_", "")
+        cfg_res = await query_db("SELECT is_active FROM configs WHERE id = ?", cfg_id)
+        cfg = get_first_row(cfg_res)
+        if cfg:
+            new_state = 0 if cfg["is_active"] else 1
+            await execute_db("UPDATE configs SET is_active = ? WHERE id = ?", new_state, cfg_id)
+            await delete_kv("cached_configs_payload")
+            await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "✅ تغییر وضعیت انجام شد."})
         return
 
     if data.startswith("adm_cfg_del_req_"):
@@ -1249,7 +1251,7 @@ async def process_callback(callback):
         
         txt = f"👤 لیست کاربران (صفحه {page}):\n\n"
         for u in users:
-            txt += f"🆔 <code>{u['telegram_id']}</code> | {html.escape(u['username'] or '')} | {html.escape(u['full_name'] or '')}\n"
+            txt += f"🆔 `{u['telegram_id']}` | {u['username']} | {u['full_name']}\n"
             
         kb = [[{"text": "🔍 جستجوی کاربر", "callback_data": "adm_search_user"}]]
         nav = []
@@ -1262,7 +1264,7 @@ async def process_callback(callback):
         kb.append(nav)
         kb.append([{"text": "🔙 بازگشت", "callback_data": "admin_return"}])
         
-        await call_telegram("sendMessage", {"chat_id": chat_id, "text": txt, "parse_mode": "HTML", "reply_markup": {"inline_keyboard": kb}})
+        await call_telegram("sendMessage", {"chat_id": chat_id, "text": txt, "parse_mode": "Markdown", "reply_markup": {"inline_keyboard": kb}})
         return
         
     if data == "adm_search_user":
@@ -1392,7 +1394,7 @@ async def process_message(message):
                 await call_telegram("sendMessage", {"chat_id": chat_id, "text": "✅ پاسخ شما به کاربر ارسال شد."})
                 return
 
-    if not await check_channel_membership(telegram_id):
+    if not await check_channel_membership(telegram_id) and not text.startswith("/start"):
         await send_membership_requirement(chat_id)
         return
 
@@ -1415,9 +1417,11 @@ async def process_message(message):
         pass # از نمایش خطای دستور نامعتبر در /start جلوگیری شد و صرفا اینجا دستورات نامعتبر دیگر را نادیده میگیریم
     else:
         # کاربری که متنی فرستاده اما در نشست خاصی نیست
+        markup = get_admin_inline_keyboard() if is_admin_user else get_user_inline_keyboard(actual_is_admin)
         await call_telegram("sendMessage", {
             "chat_id": chat_id,
-            "text": "شما در حال حاضر در نشست پشتیبانی نیستید.\nلطفاً از دکمه‌های منوی اصلی استفاده کنید."
+            "text": "شما در حال حاضر در نشست پشتیبانی نیستید.\nلطفاً از دکمه‌های منوی اصلی استفاده کنید.",
+            "reply_markup": markup
         })
 
 async def process_update(update):
