@@ -65,15 +65,15 @@ def del_local_cache(key):
 # ---------------------------------------------------------------------
 STRINGS = {
     "start_welcome": (
-        "👋 به ربات هوشمند TechNowVpn کانفیگ رایگان خوش آمدید!\n\n"
-        "از طریق دکمه‌های زیر می‌توانید حساب خود را مدیریت کرده و سرور دریافت کنید."
+        "👋 به ربات هوشمند مدیریت ساب‌لینک خوش آمدید!\n\n"
+        "از طریق دکمه‌های زیر می‌توانید حساب خود را مدیریت کرده و ساب‌لینک دریافت کنید."
     ),
     "not_member": (
         "⚠️ برای فعال‌سازی کامل امکانات ربات، ابتدا در کانال‌های زیر عضو شوید و سپس روی دکمه «عضو شدم» کلیک کنید."
     ),
     "membership_confirmed": "✅ عضویت شما تأیید شد! اکنون می‌توانید از ربات استفاده کنید.",
-    "trial_already_used": "⚠️ شما قبلاً از تست رایگان 1 روزه استفاده کرده‌اید.",
-    "trial_activated": "🎁 اشتراک تست 1 روزه شما با موفقیت فعال شد!",
+    "trial_already_used": "⚠️ شما قبلاً از تست رایگان ۱ روزه استفاده کرده‌اید.",
+    "trial_activated": "🎁 اشتراک تست ۱ روزه شما با موفقیت فعال شد!",
     "wallet_info": "👛 جزئیات کیف پول شما:\n\n💰 موجودی فعلی: {balance:,} تومان\n👥 تعداد زیرمجموعه‌ها: {ref_count} نفر",
     "insufficient_balance": (
         "❌ موجودی حساب شما کافی نیست.\n\n"
@@ -90,14 +90,14 @@ STRINGS = {
         "🔗 لینک اختصاصی شما برای دعوت:\n`{ref_link}`"
     ),
     "support_contact": "🎧 بخش ارتباط با پشتیبانی:",
-    "support_session_started": "💬 پیام خود را ارسال کنید",
+    "support_session_started": "💬 پشتیبانی: پیام خود را ارسال کنید. (برای پایان، دکمه «🔚 پایان پشتیبانی» را بزنید)",
     "support_session_ended": "🔚 جلسه پشتیبانی پایان یافت.",
     "support_forwarded": "پیام از کاربر {user_id}:\n\n{text}",
     "admin_only": "⛔ این بخش فقط برای مدیران در دسترس است.",
     "admin_panel": "🛠 به بخش ادمین خوش آمدید. دستورات مدیریتی را انتخاب کنید:",
-    "config_added": "✅ کانفیگ جدید با موفقیت پردازش و ثبت شد . ",
+    "config_added": "✅ کانفیگ با موفقیت پردازش و ثبت شد (همراه با پرچم).\nمنتظر کانفیگ بعدی هستیم (یا دکمه خروج را بزنید):",
     "config_add_stopped": "⏹ عملیات افزودن کانفیگ متوقف شد.",
-    "broadcast_start": "📢 متن پیام همگانی خود را ارسال کنید :",
+    "broadcast_start": "📢 متن پیام همگانی خود را ارسال کنید (برای لغو، «لغو» را بنویسید):",
     "broadcast_sending": "⏳ در حال ارسال همگانی...",
     "broadcast_done": "✅ پیام همگانی ارسال شد.\nتعداد کل: {success} از {total}",
     "settings_show": (
@@ -361,7 +361,7 @@ async def init_database_if_needed():
 
 async def background_config_checker():
     while True:
-        await asyncio.sleep(1 * 3600)  # Check every 1 hours
+        await asyncio.sleep(8 * 3600)  # Check every 8 hours
         try:
             res = await query_db("SELECT * FROM configs WHERE is_active = 1")
             configs = get_rows(res)
@@ -501,7 +501,7 @@ def get_user_inline_keyboard(is_actual_admin=False):
         [{"text": "📖 راهنما", "callback_data": "help_btn"}]
     ]
     if is_actual_admin:
-        kb.append([{"text": "👑 مدیریت", "callback_data": "admin_return"}])
+        kb.append([{"text": "👑 بازگشت به مدیریت", "callback_data": "admin_return"}])
     return {"inline_keyboard": kb}
 
 def get_admin_inline_keyboard():
@@ -538,7 +538,7 @@ async def send_membership_requirement(chat_id):
         
         ch_clean = ch_id.replace('@', '')
         kb.append([{"text": f"📢 عضویت در {ch_name}", "url": f"https://t.me/{ch_clean}"}])
-    kb.append([{"text": "✅ عضو شدم", "callback_data": "chk_membership"}])
+    kb.append([{"text": "✅ عضو شدم (تایید)", "callback_data": "chk_membership"}])
     
     markup = {"inline_keyboard": kb}
     await call_telegram("sendMessage", {
@@ -560,7 +560,7 @@ async def credit_referrer_if_pending(user, chat_id):
         
         await call_telegram("sendMessage", {
             "chat_id": int(ref_id),
-            "text": f"🎉 یکی از دوستان شما با لینک دعوت شما عضو شد و مبلغ {reward:,} تومان به موجودی شما افزوده گردید!\n💰 موجودی جدید شما: {new_balance:,} تومان"
+            "text": f"🎉 یکی از کاربران با لینک دعوت شما عضو شد و مبلغ {reward:,} تومان به موجودی شما افزوده گردید!\n💰 موجودی جدید شما: {new_balance:,} تومان"
         })
         new_ref_status = f"{ref_id}_rewarded"
         await execute_db("UPDATE users SET referred_by = ? WHERE id = ?", new_ref_status, user["id"])
@@ -604,7 +604,7 @@ async def handle_buy_service(user, chat_id):
     
     txt = "🛒 پلن مورد نظر خود را انتخاب کنید:\n\n"
     for p in plans:
-        txt += f"📌 {p['name']} \n 👥 {p['max_users']} کاربر \n 📆 {p['duration_days']} روز \n 💰 {p['price']:,} تومان\n\n"
+        txt += f"📌 {p['name']} | 👥 {p['max_users']} کاربر | 📆 {p['duration_days']} روز | 💰 {p['price']:,} تومان\n"
         
     markup = get_plans_inline_keyboard(plans)
     await call_telegram("sendMessage", {
@@ -683,7 +683,7 @@ async def forward_support_message(user, message, chat_id):
         
     await call_telegram("sendMessage", {
         "chat_id": chat_id,
-        "text": "✅ پیام شما به پشتیبانی ارسال شد. منتظر پاسخ باشید."
+        "text": "✅ پیام شما به پشتیبان‌ها ارسال شد. منتظر پاسخ باشید."
     })
 
 async def create_subscription_from_plan(plan_id, user_id):
@@ -728,7 +728,7 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
             if not text or text.strip() == "":
                 await call_telegram("sendMessage", {"chat_id": chat_id, "text": "❌ متن پیام نمی‌تواند خالی باشد. مجدداً ارسال کنید:"})
                 return True
-            # ذخیره موقت متن پیام همگانی در KV برای جلوگیری از تداخل با ساخت پلن
+            # ذخبره موقت متن پیام همگانی در KV برای جلوگیری از تداخل با ساخت پلن
             await put_kv(f"broadcast_{user['id']}", text, expiration_ttl=3600)
             await execute_db("UPDATE users SET state = ? WHERE id = ?", "waiting_for_broadcast_confirm", user["id"])
             markup = {"inline_keyboard": [[{"text": "✅ تایید و ارسال", "callback_data": "adm_broadcast_yes"}, {"text": "❌ لغو", "callback_data": "admin_return"}]]}
@@ -1028,7 +1028,7 @@ async def process_callback(callback):
         await execute_db("UPDATE users SET balance = balance - ? WHERE id = ?", plan["price"], user["id"])
         
         try:
-            expires_at = datetime.datetime.strptime(sub["expires_at"],"%Y-%m-%d %H:%M:%S")
+            expires_at = datetime.datetime.strptime(sub["expires_at"], "%Y-%m-%d %H:%M:%S")
             if expires_at < datetime.datetime.utcnow():
                 expires_at = datetime.datetime.utcnow()
         except:
