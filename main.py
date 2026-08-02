@@ -65,8 +65,8 @@ def del_local_cache(key):
 # ---------------------------------------------------------------------
 STRINGS = {
     "start_welcome": (
-        "👋 به ربات هوشمند مدیریت ساب‌لینک خوش آمدید!\n\n"
-        "از طریق دکمه‌های زیر می‌توانید حساب خود را مدیریت کرده و ساب‌لینک دریافت کنید."
+        "👋 به ربات هوشمند TechNowVpn کانفیگ رایگان خوش آمدید!\n\n"
+        "از طریق دکمه‌های زیر می‌توانید حساب خود را مدیریت کرده و سرور دریافت کنید."
     ),
     "not_member": (
         "⚠️ برای فعال‌سازی کامل امکانات ربات، ابتدا در کانال‌های زیر عضو شوید و سپس روی دکمه «عضو شدم» کلیک کنید."
@@ -90,14 +90,14 @@ STRINGS = {
         "🔗 لینک اختصاصی شما برای دعوت:\n`{ref_link}`"
     ),
     "support_contact": "🎧 بخش ارتباط با پشتیبانی:",
-    "support_session_started": "💬 پشتیبانی: پیام خود را ارسال کنید. (برای پایان، دکمه «🔚 پایان پشتیبانی» را بزنید)",
+    "support_session_started": "💬 پیام خود را ارسال کنید",
     "support_session_ended": "🔚 جلسه پشتیبانی پایان یافت.",
     "support_forwarded": "پیام از کاربر {user_id}:\n\n{text}",
     "admin_only": "⛔ این بخش فقط برای مدیران در دسترس است.",
     "admin_panel": "🛠 به بخش ادمین خوش آمدید. دستورات مدیریتی را انتخاب کنید:",
-    "config_added": "✅ کانفیگ با موفقیت پردازش و ثبت شد (همراه با پرچم).\nمنتظر کانفیگ بعدی هستیم (یا دکمه خروج را بزنید):",
+    "config_added": "✅ کانفیگ با موفقیت پردازش و ثبت شد . ",
     "config_add_stopped": "⏹ عملیات افزودن کانفیگ متوقف شد.",
-    "broadcast_start": "📢 متن پیام همگانی خود را ارسال کنید (برای لغو، «لغو» را بنویسید):",
+    "broadcast_start": "📢 متن پیام همگانی خود را ارسال کنید :",
     "broadcast_sending": "⏳ در حال ارسال همگانی...",
     "broadcast_done": "✅ پیام همگانی ارسال شد.\nتعداد کل: {success} از {total}",
     "settings_show": (
@@ -538,7 +538,7 @@ async def send_membership_requirement(chat_id):
         
         ch_clean = ch_id.replace('@', '')
         kb.append([{"text": f"📢 عضویت در {ch_name}", "url": f"https://t.me/{ch_clean}"}])
-    kb.append([{"text": "✅ عضو شدم (تایید)", "callback_data": "chk_membership"}])
+    kb.append([{"text": "✅ عضو شدم", "callback_data": "chk_membership"}])
     
     markup = {"inline_keyboard": kb}
     await call_telegram("sendMessage", {
@@ -560,7 +560,7 @@ async def credit_referrer_if_pending(user, chat_id):
         
         await call_telegram("sendMessage", {
             "chat_id": int(ref_id),
-            "text": f"🎉 یکی از کاربران با لینک دعوت شما عضو شد و مبلغ {reward:,} تومان به موجودی شما افزوده گردید!\n💰 موجودی جدید شما: {new_balance:,} تومان"
+            "text": f"🎉 یکی از دوستان شما با لینک دعوت شما عضو شد و مبلغ {reward:,} تومان به موجودی شما افزوده گردید!\n💰 موجودی جدید شما: {new_balance:,} تومان"
         })
         new_ref_status = f"{ref_id}_rewarded"
         await execute_db("UPDATE users SET referred_by = ? WHERE id = ?", new_ref_status, user["id"])
@@ -604,7 +604,7 @@ async def handle_buy_service(user, chat_id):
     
     txt = "🛒 پلن مورد نظر خود را انتخاب کنید:\n\n"
     for p in plans:
-        txt += f"📌 {p['name']} | 👥 {p['max_users']} کاربر | 📆 {p['duration_days']} روز | 💰 {p['price']:,} تومان\n"
+        txt += f"📌 {p['name']} \n 👥 {p['max_users']} کاربر \n 📆 {p['duration_days']} روز \n 💰 {p['price']:,} تومان\n"
         
     markup = get_plans_inline_keyboard(plans)
     await call_telegram("sendMessage", {
