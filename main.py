@@ -3,7 +3,7 @@
 ربات مدیریت ساب‌لینک v2 – نسخه Railway + Cloudflare API
 - بازنویسی شده برای اجرای مستقل در پایتون استاندارد
 - اتصال به D1 و KV از طریق Cloudflare API
-- به‌روزرسانی: تنظیم تایتل اختصاصی ساب‌لینک، اصلاح دکمه پشتیبانی و تزریق کانفیگ نمایشی
+- به‌روزرسانی: تنظیم تایتل اختصاصی ساب‌لینک، اصلاح دکمه پشتیبانی، تزریق کانفیگ نمایشی و سیستم یادآور انقضا
 """
 
 import os
@@ -36,9 +36,8 @@ CF_KV_ID = os.getenv("CF_KV_ID", "")
 # متغیر محیطی برای دامنه اصلی ربات
 APP_BASE_URL = os.getenv("APP_BASE_URL", "https://technowvpnbot.ariyacompany-io.workers.dev")
 
-# بنر آگهی در صدر سابلینک (کانفیگ نامعتبر نمایشی برای حل مشکل ساختار و پیام‌رسانی)
-DEFAULT_BANNER = "vless://89210719-c3b9-4053-9c75-c0c3396fabd3@Update:7878?encryption=none&security=none&type=ws&path=%2F#%F0%9F%93%A2%D9%87%D8%B1%20%D8%B1%D9%88%D8%B2%20%D9%84%DB%8C%D9%86%DA%A9%20%D8%AE%D9%88%D8%AF%20%D8%B1%D8%A7%20%D8%A8%D8%B1%D9%88%D8%B2%D8%B1%D8%B3%D8%A7%D9%86%DB%8C%20%DA%A9%D9%86%DB%8C%D8%AF%F0%9F%93%A2"
-BANNER_CONFIG = os.getenv("BANNER_CONFIG", DEFAULT_BANNER)
+# بنر آگهی در صدر سابلینک (کانفیگ نامعتبر نمایشی) ثابت شد
+BANNER_CONFIG = "vless://89210719-c3b9-4053-9c75-c0c3396fabd3@Update:7878?encryption=none&security=none&type=ws&path=%2F#%F0%9F%93%A2%D9%87%D8%B1%20%D8%B1%D9%88%D8%B2%20%D9%84%DB%8C%D9%86%DA%A9%20%D8%AE%D9%88%D8%AF%20%D8%B1%D8%A7%20%D8%A8%D8%B1%D9%88%D8%B2%D8%B1%D8%B3%D8%A7%D9%86%DB%8C%20%DA%A9%D9%86%DB%8C%D8%AF%F0%9F%93%A2"
 
 CF_HEADERS = {
     "Authorization": f"Bearer {CF_API_TOKEN}",
@@ -304,7 +303,11 @@ async def format_config_name(config_text):
     return config_text
 
 async def init_database_if_needed():
-    initialized = await get_kv("db_initialized_v2_2")
+    initialized = await get_kv("db_initialized_v2_3")
+    
+    # اعمال دستی برای ساخت ستون اعلان تایمر بدون ارور
+    await execute_db("ALTER TABLE subscriptions ADD COLUMN notified_level INTEGER DEFAULT 0")
+
     if initialized == "true":
         return
 
@@ -329,6 +332,7 @@ async def init_database_if_needed():
             token TEXT UNIQUE NOT NULL,
             expires_at TIMESTAMP NOT NULL,
             status TEXT DEFAULT 'active',
+            notified_level INTEGER DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY(user_id) REFERENCES users(id)
         );""",
@@ -366,9 +370,9 @@ async def init_database_if_needed():
         if not get_first_row(res):
             await execute_db("INSERT INTO settings (key, value) VALUES (?, ?)", key, val)
 
-    await put_kv("db_initialized_v2_2", "true")
+    await put_kv("db_initialized_v2_3", "true")
 
-# چکر خودکار: اجرای هر ۳۰ دقیقه
+# چکر خودکار کانفیگ‌ها: اجرای هر ۳۰ دقیقه
 async def background_config_checker():
     while True:
         await asyncio.sleep(30 * 60)  
@@ -416,6 +420,73 @@ async def background_config_checker():
                     await execute_db("UPDATE configs SET fail_count = 0 WHERE id = ?", cfg["id"])
         except Exception as e:
             print(f"Checker error: {e}")
+
+# سیستم هشداردهنده تایمر انقضا (اجرا هر 15 دقیقه)
+async def background_expiration_notifier():
+    while True:
+        await asyncio.sleep(15 * 60)  # هر ۱۵ دقیقه یکبار چک می‌کند
+        try:
+            now = datetime.datetime.utcnow()
+            # استخراج تمامی ساب‌های فعال همراه با آیدی و موجودی کاربر
+            query = """
+                SELECT s.id as sub_id, s.token, s.expires_at, s.notified_level, 
+                       u.telegram_id, u.balance 
+                FROM subscriptions s 
+                JOIN users u ON s.user_id = u.id 
+                WHERE s.status = 'active'
+            """
+            res = await query_db(query)
+            subs = get_rows(res)
+            
+            for sub in subs:
+                try:
+                    expires_at = datetime.datetime.strptime(sub["expires_at"], "%Y-%m-%d %H:%M:%S")
+                except Exception:
+                    continue
+
+                time_left = expires_at - now
+                time_left_sec = time_left.total_seconds()
+                
+                if time_left_sec <= 0:
+                    continue # منقضی شده‌ها را در جای دیگر هندل می‌کنیم
+
+                notified_level = sub.get("notified_level", 0)
+                tg_id = sub["telegram_id"]
+                sub_url = await build_sub_url_async(sub["token"])
+                msg = ""
+                new_level = notified_level
+
+                # اولویت چک کردن: از نزدیک‌ترین زمان به دورترین
+                if time_left_sec <= 3600 and notified_level < 3:
+                    msg = (f"⚠️ **هشدار خیلی مهم** ⚠️\n\nفقط **۱ ساعت** تا پایان اعتبار سرویس شما باقی مانده است!\n\n"
+                           f"🔗 لینک سرویس: `{sub_url}`\n💰 موجودی کیف پول: {sub['balance']:,} تومان\n\n"
+                           f"جهت جلوگیری از قطعی اینترنت، سریعاً از طریق دکمه زیر تمدید کنید.")
+                    new_level = 3
+                elif time_left_sec <= 86400 and notified_level < 2:
+                    msg = (f"⏳ **یادآوری تمدید**\n\nسرویس شما **۲۴ ساعت** دیگر منقضی خواهد شد.\n\n"
+                           f"🔗 لینک سرویس: `{sub_url}`\n💰 موجودی کیف پول: {sub['balance']:,} تومان\n\n"
+                           f"لطفاً پیش از اتمام زمان، اکانت خود را شارژ و تمدید نمایید.")
+                    new_level = 2
+                elif time_left_sec <= 259200 and notified_level < 1:
+                    msg = (f"📅 **اطلاعیه سرویس**\n\nکاربر گرامی، تنها **۳ روز** تا پایان اشتراک شما باقی مانده است.\n\n"
+                           f"🔗 لینک سرویس: `{sub_url}`\n💰 موجودی کیف پول: {sub['balance']:,} تومان\n\n"
+                           f"می‌توانید با دعوت دوستان حساب خود را رایگان شارژ کنید یا تمدید نمایید.")
+                    new_level = 1
+
+                if msg:
+                    markup = {"inline_keyboard": [[{"text": "♻️ تمدید سریع سرویس", "callback_data": f"renew_sub_{sub['token']}"}]]}
+                    res_tg = await call_telegram("sendMessage", {
+                        "chat_id": int(tg_id),
+                        "text": msg,
+                        "parse_mode": "Markdown",
+                        "reply_markup": markup
+                    })
+                    # اگر پیام موفق ارسال شد، سطح نوتیفیکیشن را در دیتابیس آپدیت کن
+                    if res_tg.get("ok"):
+                        await execute_db("UPDATE subscriptions SET notified_level = ? WHERE id = ?", new_level, sub["sub_id"])
+                        
+        except Exception as e:
+            print(f"Notifier error: {e}")
 
 # ---------------------------------------------------------------------
 # 🧑‍💼 توابع کاربر و ادمین
@@ -512,7 +583,6 @@ async def get_user_inline_keyboard(is_actual_admin=False):
         [{"text": "👥 دعوت دوستان", "callback_data": "referral"}, {"text": "🎧 پشتیبانی", "callback_data": "support"}]
     ]
     
-    # دکمه‌های داینامیک و راهنما - ادغام در یک ردیف
     bottom_row = [{"text": "📖 راهنما", "callback_data": "help_btn"}]
     dyn_btn_title = await get_setting("dyn_btn_title")
     if dyn_btn_title:
@@ -680,7 +750,6 @@ async def handle_support_start(user, chat_id, message_id, is_admin_user):
         
     await execute_db("UPDATE users SET state = ? WHERE id = ?", f"support_session_{user['telegram_id']}", user["id"])
     
-    # تغییر پشتیبانی به دکمه شیشه‌ای
     markup = {"inline_keyboard": [[{"text": "🔚 پایان پشتیبانی", "callback_data": "end_support"}]]}
     await edit_message(chat_id, message_id, STRINGS["support_session_started"], reply_markup=markup)
 
@@ -969,27 +1038,30 @@ async def process_callback(callback):
     if not defer_answer and data != "end_support":
         await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id})
 
-    # پایان پشتیبانی بصورت پاپ‌آپ و ادیت پیام و بازگشت به منو
+    # دکمه پایان پشتیبانی (اصلاح شده طبق درخواست)
     if data == "end_support":
         await execute_db("UPDATE users SET state = NULL WHERE id = ?", user["id"])
-        await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "✅ نشست پایان یافت.", "show_alert": True})
         
-        # تغییر متن پیام فعلی
-        await edit_message(chat_id, message_id, "🔚 نشست پشتیبانی پایان یافت.\n\nاین پیام پس از ۵ ثانیه پاک خواهد شد...", reply_markup=None)
+        # ۱. پاپ‌آپ پایان پشتیبانی
+        await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "✅ نشست پشتیبانی پایان یافت.", "show_alert": True})
         
-        # انتظار ۵ ثانیه
-        await asyncio.sleep(5)
+        # ۲. تغییر متن پیام فعلی تا دکمه‌اش حذف شود
+        await edit_message(chat_id, message_id, "🔚 نشست پشتیبانی پایان یافت.\n\n(این پیام به‌زودی پاک می‌شود)", reply_markup=None)
         
-        # پاک کردن پیام پشتیبانی
-        await call_telegram("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
-        
-        # ارسال مجدد منوی اصلی
+        # ۳. ارسال منوی اصلی فوراً به کاربر
         markup = await get_user_inline_keyboard(actual_is_admin)
         await call_telegram("sendMessage", {
             "chat_id": chat_id,
             "text": STRINGS["start_welcome"],
             "reply_markup": markup
         })
+        
+        # ۴. ایجاد یک وظیفه پس‌زمینه برای حذف پیام قبلی بعد از ۵ ثانیه
+        async def delete_old_message_later():
+            await asyncio.sleep(5)
+            await call_telegram("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
+            
+        asyncio.create_task(delete_old_message_later())
         return
 
     if data in ["user_return", "admin_return"]:
@@ -1050,7 +1122,6 @@ async def process_callback(callback):
     if data == "referral": return await handle_referral(user, chat_id, message_id, is_admin_user)
     if data == "support": return await handle_support_start(user, chat_id, message_id, is_admin_user)
     
-    # دکمه راهنما (بدون حذف شدن در صورت متنی بودن)
     if data == "help_btn":
         help_val = await get_setting("help_content")
         if not help_val:
@@ -1072,7 +1143,6 @@ async def process_callback(callback):
             pass
         return
 
-    # دکمه داینامیک (بدون حذف شدن در صورت متنی بودن)
     if data == "dyn_btn_click":
         content_val = await get_setting("dyn_btn_content")
         
@@ -1157,7 +1227,8 @@ async def process_callback(callback):
             expires_at = datetime.datetime.utcnow()
             
         new_expires_at = (expires_at + datetime.timedelta(days=plan["duration_days"])).strftime("%Y-%m-%d %H:%M:%S")
-        await execute_db("UPDATE subscriptions SET expires_at = ?, status = 'active' WHERE id = ?", new_expires_at, sub["id"])
+        # ریست کردن مقدار آلارم به صفر برای تمدید جدید
+        await execute_db("UPDATE subscriptions SET expires_at = ?, status = 'active', notified_level = 0 WHERE id = ?", new_expires_at, sub["id"])
         await edit_message(chat_id, message_id, f"✅ سرویس با موفقیت تمدید شد.\nانقضای جدید: {new_expires_at} (UTC)", reply_markup={"inline_keyboard": [[{"text": "🔙 بازگشت", "callback_data": "my_services"}]]})
         return
 
@@ -1326,7 +1397,6 @@ async def process_callback(callback):
         await edit_message(chat_id, message_id, STRINGS["broadcast_done"].format(success=success, total=len(all_users)), reply_markup=get_admin_inline_keyboard())
         return
 
-    # منوی تنظیمات - ادغام شده
     if data == "adm_settings":
         reward = await get_setting("referral_reward", "2000")
         channels = await get_setting("force_channels", "غیرفعال")
@@ -1615,6 +1685,7 @@ async def startup_event():
     http_client = httpx.AsyncClient(limits=httpx.Limits(max_keepalive_connections=50, max_connections=100))
     await init_database_if_needed()
     asyncio.create_task(background_config_checker())
+    asyncio.create_task(background_expiration_notifier())  # اضافه شدن تسک هشداردهنده تایمر
     print("🚀 Bot Server Started!")
 
 @app.on_event("shutdown")
@@ -1653,29 +1724,27 @@ async def handle_sublink(token: str):
         confs = get_rows(cfg_res)
         
         payload_lines = []
+        
+        # 1. اضافه کردن ثابت و همیشگی بنر به عنوان اولین کانفیگ
         if BANNER_CONFIG:
-            banner_text = BANNER_CONFIG.strip()
-            # اگر آگهی در قالب استاندارد نبود، آن را به یک کانفیگ vless فیک تبدیل می‌کنیم
-            if not any(banner_text.startswith(p) for p in ["vless://", "vmess://", "trojan://", "ss://", "ssr://"]):
-                safe_text = urllib.parse.quote(banner_text)
-                banner_text = f"vless://00000000-0000-0000-0000-000000000000@127.0.0.1:80?encryption=none&security=none&type=tcp#{safe_text}"
-            payload_lines.append(banner_text)
+            payload_lines.append(BANNER_CONFIG.strip())
             
         payload_lines.extend([c["config_text"].strip() for c in confs if c["config_text"].strip()])
         combined = "\n".join(payload_lines)
         cached_payload = base64.b64encode(combined.encode("utf-8")).decode("utf-8")
         await put_kv("cached_configs_payload", cached_payload, expiration_ttl=300)
 
-    # تنظیمات مربوط به Title و آپدیت خودکار
+    # 2. تنظیم دقیق تایتل جهت شناسایی در تمامی کلاینت‌های V2ray
     title = "🌐 @TechNowVPNBOT🛜"
     title_b64 = base64.b64encode(title.encode('utf-8')).decode('utf-8')
-    encoded_title = urllib.parse.quote(title)
+    safe_title = urllib.parse.quote(title)
     
     headers = {
         "Cache-Control": "no-cache, no-store, must-revalidate",
         "profile-title": f"base64:{title_b64}",
         "profile-update-interval": "12",
-        "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_title}"
+        "Subscription-Userinfo": f"upload=0; download=0; total=53687091200; expire={int(expires_at.timestamp())}",
+        "Content-Disposition": f"attachment; filename*=UTF-8''{safe_title}; filename=\"{safe_title}\""
     }
     
     return Response(content=cached_payload, media_type="text/plain", headers=headers)
