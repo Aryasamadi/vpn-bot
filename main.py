@@ -36,7 +36,7 @@ CF_KV_ID = os.getenv("CF_KV_ID", "")
 # متغیر محیطی برای دامنه اصلی ربات
 APP_BASE_URL = os.getenv("APP_BASE_URL", "https://technowvpnbot.ariyacompany-io.workers.dev")
 
-# فیچر ۴: متغیر محیطی برای کانفیگ تبلیغاتی (بنر)
+# بنر آگهی در صدر سابلینک
 BANNER_CONFIG = os.getenv("BANNER_CONFIG", "")
 
 CF_HEADERS = {
@@ -95,7 +95,7 @@ STRINGS = {
         "🔗 لینک اختصاصی شما برای دعوت:\n`{ref_link}`"
     ),
     "support_contact": "🎧 بخش ارتباط با پشتیبانی:",
-    "support_session_started": "💬 پیام خود را ارسال کنید",
+    "support_session_started": "💬 پیام خود را ارسال کنید.\nبرای خروج روی دکمه شیشه‌ای زیر کلیک کنید.",
     "support_session_ended": "🔚 جلسه پشتیبانی پایان یافت.",
     "support_forwarded": "پیام از کاربر {user_id}:\n\n{text}",
     "admin_only": "⛔ این بخش فقط برای مدیران در دسترس است.",
@@ -253,7 +253,7 @@ async def set_setting(key, value):
     set_local_cache(f"setting_{key}", str(value), 600)
 
 # ---------------------------------------------------------------------
-# 🗄️ مقداردهی اولیه دیتابیس و توابع پردازش کانفیگ
+# 🗄️ مقداردهی اولیه دیتابیس و پردازش کانفیگ
 # ---------------------------------------------------------------------
 def extract_ip_from_config(config_text):
     try:
@@ -356,19 +356,6 @@ async def init_database_if_needed():
     for q in queries:
         await execute_db(q)
 
-    try: await execute_db("ALTER TABLE configs ADD COLUMN fail_count INTEGER DEFAULT 0")
-    except: pass
-    try: await execute_db("ALTER TABLE users ADD COLUMN username TEXT DEFAULT NULL")
-    except: pass
-    try: await execute_db("ALTER TABLE users ADD COLUMN full_name TEXT DEFAULT NULL")
-    except: pass
-    try: await execute_db("ALTER TABLE users ADD COLUMN is_test_mode INTEGER DEFAULT 0")
-    except: pass
-    try: await execute_db("ALTER TABLE subscriptions ADD COLUMN plan_id INTEGER DEFAULT NULL")
-    except: pass
-    try: await execute_db("ALTER TABLE users ADD COLUMN plan_data TEXT DEFAULT NULL")
-    except: pass
-
     defaults = {
         "referral_reward": "2000",
         "force_channels": "",
@@ -380,6 +367,7 @@ async def init_database_if_needed():
 
     await put_kv("db_initialized_v2_2", "true")
 
+# چکر خودکار: اجرای هر ۳۰ دقیقه
 async def background_config_checker():
     while True:
         await asyncio.sleep(30 * 60)  
@@ -418,7 +406,7 @@ async def background_config_checker():
                             for admin_id in admins:
                                 await call_telegram("sendMessage", {
                                     "chat_id": int(admin_id),
-                                    "text": f"⚠️ کانفیگ زیر به دلیل 3 بار عدم اتصال متوالی (حذف خودکار) گردید:\n\n`{cfg['config_text']}`",
+                                    "text": f"⚠️ کانفیگ زیر به دلیل 3 بار عدم اتصال متوالی حذف گردید:\n\n`{cfg['config_text']}`",
                                     "parse_mode": "Markdown"
                                 })
                     else:
@@ -520,13 +508,16 @@ async def get_user_inline_keyboard(is_actual_admin=False):
     kb = [
         [{"text": "🛒 خرید سرویس", "callback_data": "buy_service"}, {"text": "🎁 تست رایگان", "callback_data": "free_trial"}],
         [{"text": "📱 سرویس‌های من", "callback_data": "my_services"}, {"text": "👛 کیف پول", "callback_data": "wallet"}],
-        [{"text": "👥 دعوت دوستان", "callback_data": "referral"}, {"text": "🎧 پشتیبانی", "callback_data": "support"}],
-        [{"text": "📖 راهنما", "callback_data": "help_btn"}]
+        [{"text": "👥 دعوت دوستان", "callback_data": "referral"}, {"text": "🎧 پشتیبانی", "callback_data": "support"}]
     ]
     
+    # دکمه‌های داینامیک و راهنما - ادغام در یک ردیف
+    bottom_row = [{"text": "📖 راهنما", "callback_data": "help_btn"}]
     dyn_btn_title = await get_setting("dyn_btn_title")
     if dyn_btn_title:
-        kb.insert(-1, [{"text": dyn_btn_title, "callback_data": "dyn_btn_click"}])
+        bottom_row.insert(0, {"text": dyn_btn_title, "callback_data": "dyn_btn_click"})
+    
+    kb.append(bottom_row)
         
     if is_actual_admin:
         kb.append([{"text": "👑 مدیریت", "callback_data": "admin_return"}])
@@ -538,7 +529,6 @@ def get_admin_inline_keyboard():
             [{"text": "➕ افزودن کانفیگ", "callback_data": "adm_add_config"}, {"text": "📋 مدیریت کانفیگ‌ها", "callback_data": "adm_manage_configs"}],
             [{"text": "📢 ارسال همگانی", "callback_data": "adm_broadcast"}, {"text": "⚙️ تنظیمات", "callback_data": "adm_settings"}],
             [{"text": "👤 مدیریت کاربران", "callback_data": "adm_manage_users_1"}, {"text": "📦 مدیریت پلن‌ها", "callback_data": "adm_manage_plans"}],
-            [{"text": "📖 تنظیم راهنما", "callback_data": "adm_set_help"}, {"text": "🔘 تنظیم دکمه داینامیک", "callback_data": "adm_dyn_btn"}],
             [{"text": "👤 نمای کاربری (تست)", "callback_data": "adm_test_user"}]
         ]
     }
@@ -688,16 +678,10 @@ async def handle_support_start(user, chat_id, message_id, is_admin_user):
         return
         
     await execute_db("UPDATE users SET state = ? WHERE id = ?", f"support_session_{user['telegram_id']}", user["id"])
-    markup = {
-        "keyboard": [[{"text": "🔚 پایان پشتیبانی"}]],
-        "resize_keyboard": True
-    }
-    await call_telegram("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
-    await call_telegram("sendMessage", {
-        "chat_id": chat_id,
-        "text": STRINGS["support_session_started"],
-        "reply_markup": markup
-    })
+    
+    # تغییر پشتیبانی به دکمه شیشه‌ای
+    markup = {"inline_keyboard": [[{"text": "🔚 پایان پشتیبانی", "callback_data": "end_support"}]]}
+    await edit_message(chat_id, message_id, STRINGS["support_session_started"], reply_markup=markup)
 
 async def forward_support_message(user, message, chat_id):
     if not ADMIN_IDS:
@@ -935,7 +919,6 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
                 await call_telegram("sendMessage", {"chat_id": chat_id, "text": "✅ محتوای راهنما با موفقیت ثبت شد.", "reply_markup": get_admin_inline_keyboard()})
             return True
 
-        # استیت‌های دکمه داینامیک ادمین آپدیت شده (فقط عنوان در منو و محتوا)
         if state == "waiting_dyn_title":
             await set_setting("dyn_btn_title", text.strip())
             await execute_db("UPDATE users SET state = NULL WHERE id = ?", user["id"])
@@ -984,6 +967,14 @@ async def process_callback(callback):
     defer_answer = data.startswith("confirm_buy_") or data == "chk_membership" or data.startswith("qr_") or data.startswith("confirm_renew_")
     if not defer_answer:
         await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id})
+
+    # پایان پشتیبانی بصورت پاپ‌آپ و ادیت پیام
+    if data == "end_support":
+        await execute_db("UPDATE users SET state = NULL WHERE id = ?", user["id"])
+        await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "✅ جلسه پشتیبانی بسته شد.", "show_alert": True})
+        markup = await get_user_inline_keyboard(actual_is_admin)
+        await edit_message(chat_id, message_id, STRINGS["start_welcome"], reply_markup=markup)
+        return
 
     if data in ["user_return", "admin_return"]:
         if user.get("state") is not None:
@@ -1043,6 +1034,7 @@ async def process_callback(callback):
     if data == "referral": return await handle_referral(user, chat_id, message_id, is_admin_user)
     if data == "support": return await handle_support_start(user, chat_id, message_id, is_admin_user)
     
+    # دکمه راهنما (بدون حذف شدن در صورت متنی بودن)
     if data == "help_btn":
         help_val = await get_setting("help_content")
         if not help_val:
@@ -1050,20 +1042,21 @@ async def process_callback(callback):
             return
         try:
             help_data = json.loads(help_val)
-            await call_telegram("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
             if help_data["type"] == "text":
-                await call_telegram("sendMessage", {"chat_id": chat_id, "text": help_data["content"], "reply_markup": get_back_markup(is_admin_user)})
-            elif help_data["type"] == "photo":
-                await call_telegram("sendPhoto", {"chat_id": chat_id, "photo": help_data["file_id"], "caption": help_data.get("caption", ""), "reply_markup": get_back_markup(is_admin_user)})
-            elif help_data["type"] == "video":
-                await call_telegram("sendVideo", {"chat_id": chat_id, "video": help_data["file_id"], "caption": help_data.get("caption", ""), "reply_markup": get_back_markup(is_admin_user)})
-            elif help_data["type"] == "document":
-                await call_telegram("sendDocument", {"chat_id": chat_id, "document": help_data["file_id"], "caption": help_data.get("caption", ""), "reply_markup": get_back_markup(is_admin_user)})
+                await edit_message(chat_id, message_id, help_data["content"], reply_markup=get_back_markup(is_admin_user))
+            else:
+                await call_telegram("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
+                if help_data["type"] == "photo":
+                    await call_telegram("sendPhoto", {"chat_id": chat_id, "photo": help_data["file_id"], "caption": help_data.get("caption", ""), "reply_markup": get_back_markup(is_admin_user)})
+                elif help_data["type"] == "video":
+                    await call_telegram("sendVideo", {"chat_id": chat_id, "video": help_data["file_id"], "caption": help_data.get("caption", ""), "reply_markup": get_back_markup(is_admin_user)})
+                elif help_data["type"] == "document":
+                    await call_telegram("sendDocument", {"chat_id": chat_id, "document": help_data["file_id"], "caption": help_data.get("caption", ""), "reply_markup": get_back_markup(is_admin_user)})
         except:
             pass
         return
 
-    # آپدیت کلیک روی دکمه داینامیک: نمایش مستقیم محتوا با دکمه بازگشت
+    # دکمه داینامیک (بدون حذف شدن در صورت متنی بودن)
     if data == "dyn_btn_click":
         content_val = await get_setting("dyn_btn_content")
         
@@ -1075,15 +1068,16 @@ async def process_callback(callback):
         
         try:
             dyn_data = json.loads(content_val)
-            await call_telegram("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
             if dyn_data["type"] == "text":
-                await call_telegram("sendMessage", {"chat_id": chat_id, "text": dyn_data["content"], "reply_markup": markup})
-            elif dyn_data["type"] == "photo":
-                await call_telegram("sendPhoto", {"chat_id": chat_id, "photo": dyn_data["file_id"], "caption": dyn_data.get("caption", ""), "reply_markup": markup})
-            elif dyn_data["type"] == "video":
-                await call_telegram("sendVideo", {"chat_id": chat_id, "video": dyn_data["file_id"], "caption": dyn_data.get("caption", ""), "reply_markup": markup})
-            elif dyn_data["type"] == "document":
-                await call_telegram("sendDocument", {"chat_id": chat_id, "document": dyn_data["file_id"], "caption": dyn_data.get("caption", ""), "reply_markup": markup})
+                await edit_message(chat_id, message_id, dyn_data["content"], reply_markup=markup)
+            else:
+                await call_telegram("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
+                if dyn_data["type"] == "photo":
+                    await call_telegram("sendPhoto", {"chat_id": chat_id, "photo": dyn_data["file_id"], "caption": dyn_data.get("caption", ""), "reply_markup": markup})
+                elif dyn_data["type"] == "video":
+                    await call_telegram("sendVideo", {"chat_id": chat_id, "video": dyn_data["file_id"], "caption": dyn_data.get("caption", ""), "reply_markup": markup})
+                elif dyn_data["type"] == "document":
+                    await call_telegram("sendDocument", {"chat_id": chat_id, "document": dyn_data["file_id"], "caption": dyn_data.get("caption", ""), "reply_markup": markup})
         except:
             pass
         return
@@ -1330,6 +1324,7 @@ async def process_callback(callback):
         await edit_message(chat_id, message_id, STRINGS["broadcast_done"].format(success=success, total=len(all_users)), reply_markup=get_admin_inline_keyboard())
         return
 
+    # منوی تنظیمات - ادغام شده
     if data == "adm_settings":
         reward = await get_setting("referral_reward", "2000")
         channels = await get_setting("force_channels", "غیرفعال")
@@ -1340,6 +1335,8 @@ async def process_callback(callback):
             "inline_keyboard": [
                 [{"text": "✏️ ویرایش کانال‌های اجباری", "callback_data": "adm_set_channels"},
                  {"text": "✏️ ویرایش پاداش دعوت", "callback_data": "adm_set_referral_reward"}],
+                [{"text": "📖 تنظیم راهنما", "callback_data": "adm_set_help"}, 
+                 {"text": "🔘 تنظیم دکمه داینامیک", "callback_data": "adm_dyn_btn"}],
                 [{"text": "🔙 بازگشت به منوی اصلی", "callback_data": "admin_return"}]
             ]
         }
@@ -1388,16 +1385,15 @@ async def process_callback(callback):
         
     if data == "adm_set_help":
         await execute_db("UPDATE users SET state = 'waiting_for_help_content' WHERE id = ?", user["id"])
-        await edit_message(chat_id, message_id, "محتوای دکمه راهنما را ارسال کنید (پشتیبانی از متن، عکس، ویدیو و فایل):", reply_markup=get_back_markup(True))
+        await edit_message(chat_id, message_id, "محتوای دکمه راهنما را ارسال کنید (پشتیبانی از متن، عکس، ویدیو و فایل):", reply_markup={"inline_keyboard": [[{"text": "🔙 بازگشت", "callback_data": "adm_settings"}]]})
         return
 
-    # منوی تنظیمات ادمین آپدیت شد (بدون عنوان زیر دکمه شیشه‌ای)
     if data == "adm_dyn_btn":
         markup = {
             "inline_keyboard": [
                 [{"text": "✏️ عنوان دکمه در منو", "callback_data": "adm_dyn_title"}],
                 [{"text": "✏️ محتوای دکمه (پیام اصلی)", "callback_data": "adm_dyn_content"}],
-                [{"text": "🔙 بازگشت به منوی اصلی", "callback_data": "admin_return"}]
+                [{"text": "🔙 بازگشت", "callback_data": "adm_settings"}]
             ]
         }
         await edit_message(chat_id, message_id, "تنظیمات دکمه داینامیک:", reply_markup=markup)
@@ -1405,12 +1401,12 @@ async def process_callback(callback):
 
     if data == "adm_dyn_title":
         await execute_db("UPDATE users SET state = 'waiting_dyn_title' WHERE id = ?", user["id"])
-        await edit_message(chat_id, message_id, "لطفاً عنوانی که می‌خواهید برای دکمه در منوی کاربری نمایش داده شود را ارسال کنید:", reply_markup=get_back_markup(True))
+        await edit_message(chat_id, message_id, "لطفاً عنوانی که می‌خواهید برای دکمه در منوی کاربری نمایش داده شود را ارسال کنید:", reply_markup={"inline_keyboard": [[{"text": "🔙 بازگشت", "callback_data": "adm_dyn_btn"}]]})
         return
 
     if data == "adm_dyn_content":
         await execute_db("UPDATE users SET state = 'waiting_dyn_content' WHERE id = ?", user["id"])
-        await edit_message(chat_id, message_id, "محتوای دکمه داینامیک را ارسال کنید (پشتیبانی کامل از عکس، متن، ویدیو و فایل):", reply_markup=get_back_markup(True))
+        await edit_message(chat_id, message_id, "محتوای دکمه داینامیک را ارسال کنید (پشتیبانی کامل از عکس، متن، ویدیو و فایل):", reply_markup={"inline_keyboard": [[{"text": "🔙 بازگشت", "callback_data": "adm_dyn_btn"}]]})
         return
 
     if data.startswith("adm_manage_users_"):
@@ -1547,17 +1543,6 @@ async def process_message(message):
     if text in ["/admin", "admin", "مدیریت"] and actual_is_admin:
         await execute_db("UPDATE users SET state = NULL, plan_data = NULL, is_test_mode = 0 WHERE id = ?", user["id"])
         await show_admin_panel(chat_id)
-        return
-
-    if text in ["🔚 پایان پشتیبانی"]:
-        await execute_db("UPDATE users SET state = NULL, plan_data = NULL WHERE id = ?", user["id"])
-        user["state"] = None
-        await call_telegram("sendMessage", {"chat_id": chat_id, "text": STRINGS["support_session_ended"], "reply_markup": {"remove_keyboard": True}})
-        if is_admin_user:
-            await show_admin_panel(chat_id)
-        else:
-            markup = await get_user_inline_keyboard(actual_is_admin)
-            await call_telegram("sendMessage", {"chat_id": chat_id, "text": STRINGS["start_welcome"], "reply_markup": markup})
         return
 
     if actual_is_admin and message.get("reply_to_message"):
