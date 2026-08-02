@@ -526,9 +526,9 @@ async def get_user_inline_keyboard(is_actual_admin=False):
 def get_admin_inline_keyboard():
     return {
         "inline_keyboard": [
-            [{"text": "➕ افزودن کانفیگ", "callback_data": "adm_add_config"}, {"text": "📋 مدیریت کانفیگ‌ها", "callback_data": "adm_manage_configs"}],
-            [{"text": "📢 ارسال همگانی", "callback_data": "adm_broadcast"}, {"text": "⚙️ تنظیمات", "callback_data": "adm_settings"}],
-            [{"text": "👤 مدیریت کاربران", "callback_data": "adm_manage_users_1"}, {"text": "📦 مدیریت پلن‌ها", "callback_data": "adm_manage_plans"}],
+            [{"text": "📦 مدیریت پلن‌ها", "callback_data": "adm_manage_plans"}, {"text": "👤 مدیریت کاربران", "callback_data": "adm_manage_users_1"}],
+            [{"text": "📋 مدیریت کانفیگ‌ها", "callback_data": "adm_manage_configs"}, {"text": "➕ افزودن کانفیگ", "callback_data": "adm_add_config"}],
+            [{"text": "⚙️ تنظیمات", "callback_data": "adm_settings"}, {"text": "📢 ارسال همگانی", "callback_data": "adm_broadcast"}],
             [{"text": "👤 نمای کاربری (تست)", "callback_data": "adm_test_user"}]
         ]
     }
@@ -1232,13 +1232,9 @@ async def process_callback(callback):
             
         await call_telegram("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
         for c in configs:
-            status_btn = "🟢 فعال (خاموش کردن)" if c['is_active'] else "🔴 غیرفعال (روشن کردن)"
             markup = {
                 "inline_keyboard": [
-                    [
-                        {"text": "❌ حذف", "callback_data": f"adm_cfg_del_req_{c['id']}"},
-                        {"text": status_btn, "callback_data": f"adm_cfg_toggle_{c['id']}"}
-                    ]
+                    [{"text": "❌ حذف", "callback_data": f"adm_cfg_del_req_{c['id']}"}]
                 ]
             }
             await call_telegram("sendMessage", {
@@ -1255,38 +1251,28 @@ async def process_callback(callback):
         })
         return
 
-    if data.startswith("adm_cfg_toggle_"):
-        cfg_id = data.replace("adm_cfg_toggle_", "")
-        res = await query_db("SELECT is_active FROM configs WHERE id = ?", cfg_id)
-        cfg = get_first_row(res)
-        if cfg:
-            new_state = 0 if cfg["is_active"] else 1
-            await execute_db("UPDATE configs SET is_active = ? WHERE id = ?", new_state, cfg_id)
-            await delete_kv("cached_configs_payload") 
-            
-            status_btn = "🟢 فعال (خاموش کردن)" if new_state else "🔴 غیرفعال (روشن کردن)"
-            markup = {
-                "inline_keyboard": [
-                    [
-                        {"text": "❌ حذف", "callback_data": f"adm_cfg_del_req_{cfg_id}"},
-                        {"text": status_btn, "callback_data": f"adm_cfg_toggle_{cfg_id}"}
-                    ]
-                ]
-            }
-            await edit_message(chat_id, message_id, message.get("text", ""), reply_markup=markup, parse_mode="Markdown")
-        return
-
     if data.startswith("adm_cfg_del_req_"):
         cfg_id = data.replace("adm_cfg_del_req_", "")
-        markup = {"inline_keyboard": [[{"text": "✅ بله، حذف کن", "callback_data": f"adm_cfg_del_yes_{cfg_id}"}, {"text": "❌ خیر", "callback_data": "admin_return"}]]}
+        markup = {"inline_keyboard": [[{"text": "✅ بله، حذف کن", "callback_data": f"adm_cfg_del_yes_{cfg_id}"}, {"text": "❌ لغو", "callback_data": f"adm_cfg_del_cancel_{cfg_id}"}]]}
         await edit_message(chat_id, message_id, "آیا از حذف این کانفیگ اطمینان دارید؟", reply_markup=markup)
+        return
+
+    if data.startswith("adm_cfg_del_cancel_"):
+        cfg_id = data.replace("adm_cfg_del_cancel_", "")
+        res = await query_db("SELECT config_text FROM configs WHERE id = ?", cfg_id)
+        cfg = get_first_row(res)
+        if cfg:
+            markup = {"inline_keyboard": [[{"text": "❌ حذف", "callback_data": f"adm_cfg_del_req_{cfg_id}"}]]}
+            await edit_message(chat_id, message_id, f"شناسه کانفیگ: {cfg_id}\n```{cfg['config_text']}```", reply_markup=markup, parse_mode="Markdown")
+        else:
+            await call_telegram("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
         return
 
     if data.startswith("adm_cfg_del_yes_"):
         cfg_id = data.replace("adm_cfg_del_yes_", "")
         await execute_db("DELETE FROM configs WHERE id = ?", cfg_id)
         await delete_kv("cached_configs_payload")
-        await edit_message(chat_id, message_id, "🗑 کانفیگ حذف شد.", reply_markup=get_back_markup(True))
+        await call_telegram("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
         return
 
     if data == "adm_broadcast":
@@ -1652,14 +1638,27 @@ async def handle_sublink(token: str):
         
         payload_lines = []
         if BANNER_CONFIG:
-            payload_lines.append(BANNER_CONFIG.strip())
+            banner_text = BANNER_CONFIG.strip()
+            # اگر آگهی در قالب استاندارد نبود، آن را به یک کانفیگ vless فیک تبدیل می‌کنیم
+            if not any(banner_text.startswith(p) for p in ["vless://", "vmess://", "trojan://", "ss://", "ssr://"]):
+                safe_text = urllib.parse.quote(banner_text)
+                banner_text = f"vless://00000000-0000-0000-0000-000000000000@127.0.0.1:80?encryption=none&security=none&type=tcp#{safe_text}"
+            payload_lines.append(banner_text)
             
         payload_lines.extend([c["config_text"].strip() for c in confs if c["config_text"].strip()])
         combined = "\n".join(payload_lines)
         cached_payload = base64.b64encode(combined.encode("utf-8")).decode("utf-8")
         await put_kv("cached_configs_payload", cached_payload, expiration_ttl=300)
 
-    headers = {"Cache-Control": "no-cache, no-store, must-revalidate"}
+    # تنظیمات مربوط به Title و آپدیت خودکار
+    title = "🌐 @TechNowVPNBOT🛜"
+    title_b64 = base64.b64encode(title.encode('utf-8')).decode('utf-8')
+    headers = {
+        "Cache-Control": "no-cache, no-store, must-revalidate",
+        "profile-title": f"base64:{title_b64}",
+        "profile-update-interval": "12"
+    }
+    
     return Response(content=cached_payload, media_type="text/plain", headers=headers)
 
 if __name__ == "__main__":
