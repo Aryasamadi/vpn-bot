@@ -1028,7 +1028,7 @@ async def process_callback(callback):
         await execute_db("UPDATE users SET balance = balance - ? WHERE id = ?", plan["price"], user["id"])
         
         try:
-            expires_at = datetime.datetime.strptime(sub["expires_at"], "تاریخ :" ,"%Y-%m-%d "\n , "ساعت :" ," %H:%M:%S")
+            expires_at = datetime.datetime.strptime(sub["expires_at"],"%Y-%m-%d %H:%M:%S")
             if expires_at < datetime.datetime.utcnow():
                 expires_at = datetime.datetime.utcnow()
         except:
