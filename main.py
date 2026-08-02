@@ -155,7 +155,11 @@ async def query_db(sql, *args):
     payload = {"sql": sql, "params": list(args)}
     try:
         res = await http_client.post(url, headers=CF_HEADERS, json=payload, timeout=10.0)
-        return res.json()
+        data = res.json()
+        # تغییر شماره ۲: لاگ کردن ارورهای SQL دیتابیس D1 در صورت موفقیت آمیز نبودن کوئری
+        if data.get("success") is False:
+            print(f"D1 SQL Error: {data.get('errors')}")
+        return data
     except Exception as e:
         print(f"D1 API Error: {str(e)}")
         return {"success": False, "error": str(e)}
@@ -276,7 +280,8 @@ async def format_config_name(config_text):
     return config_text
 
 async def init_database_if_needed():
-    initialized = await get_kv("db_initialized_v2_1")
+    # تغییر شماره ۱: تغییر کلید برای فورس کردن اجرای مجدد دستورات ALTER TABLE و ایجاد ستون plan_data
+    initialized = await get_kv("db_initialized_v2_2")
     if initialized == "true":
         return
 
@@ -351,7 +356,8 @@ async def init_database_if_needed():
         if not get_first_row(res):
             await execute_db("INSERT INTO settings (key, value) VALUES (?, ?)", key, val)
 
-    await put_kv("db_initialized_v2_1", "true")
+    # تغییر شماره ۱: ثبت کلید جدید کش بعد از موفقیت‌آمیز بودن آپدیت دیتابیس
+    await put_kv("db_initialized_v2_2", "true")
 
 async def background_config_checker():
     while True:
