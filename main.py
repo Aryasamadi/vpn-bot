@@ -339,6 +339,8 @@ async def init_database_if_needed():
     except: pass
     try: await execute_db("ALTER TABLE subscriptions ADD COLUMN plan_id INTEGER DEFAULT NULL")
     except: pass
+    try: await execute_db("ALTER TABLE users ADD COLUMN plan_data TEXT DEFAULT NULL")
+    except: pass
 
     defaults = {
         "referral_reward": "2000",
@@ -1251,7 +1253,7 @@ async def process_callback(callback):
         
         txt = f"👤 لیست کاربران (صفحه {page}):\n\n"
         for u in users:
-            txt += f"🆔 `{u['telegram_id']}` | {u['username']} | {u['full_name']}\n"
+            txt += f"🆔 <code>{u['telegram_id']}</code> | {u['username']} | {u['full_name']}\n"
             
         kb = [[{"text": "🔍 جستجوی کاربر", "callback_data": "adm_search_user"}]]
         nav = []
@@ -1264,7 +1266,7 @@ async def process_callback(callback):
         kb.append(nav)
         kb.append([{"text": "🔙 بازگشت", "callback_data": "admin_return"}])
         
-        await call_telegram("sendMessage", {"chat_id": chat_id, "text": txt, "parse_mode": "Markdown", "reply_markup": {"inline_keyboard": kb}})
+        await call_telegram("sendMessage", {"chat_id": chat_id, "text": txt, "parse_mode": "HTML", "reply_markup": {"inline_keyboard": kb}})
         return
         
     if data == "adm_search_user":
@@ -1356,6 +1358,22 @@ async def process_message(message):
     actual_is_admin = is_admin(telegram_id, user_data=None)
     is_admin_user = is_admin(telegram_id, user_data=user)
 
+    if text.startswith("/start"):
+        user["state"] = None
+        user["plan_data"] = None
+        await execute_db("UPDATE users SET state = NULL, plan_data = NULL WHERE id = ?", user["id"])
+        
+        await credit_referrer_if_pending(user, chat_id)
+        if is_admin_user:
+            await show_admin_panel(chat_id)
+        else:
+            await call_telegram("sendMessage", {
+                "chat_id": chat_id,
+                "text": STRINGS["start_welcome"],
+                "reply_markup": get_user_inline_keyboard(actual_is_admin)
+            })
+        return
+
     if text in ["/admin", "admin", "مدیریت"] and actual_is_admin:
         await execute_db("UPDATE users SET state = NULL, plan_data = NULL, is_test_mode = 0 WHERE id = ?", user["id"])
         await show_admin_panel(chat_id)
@@ -1394,7 +1412,7 @@ async def process_message(message):
                 await call_telegram("sendMessage", {"chat_id": chat_id, "text": "✅ پاسخ شما به کاربر ارسال شد."})
                 return
 
-    if not await check_channel_membership(telegram_id) and not text.startswith("/start"):
+    if not await check_channel_membership(telegram_id):
         await send_membership_requirement(chat_id)
         return
 
@@ -1403,25 +1421,17 @@ async def process_message(message):
         if await handle_state(user, state, message, chat_id, is_admin_user, actual_is_admin):
             return
 
-    if text.startswith("/start"):
-        await credit_referrer_if_pending(user, chat_id)
-        if is_admin_user:
-            await show_admin_panel(chat_id)
-        else:
-            await call_telegram("sendMessage", {
-                "chat_id": chat_id,
-                "text": STRINGS["start_welcome"],
-                "reply_markup": get_user_inline_keyboard(actual_is_admin)
-            })
-    elif text.startswith("/"):
-        pass # از نمایش خطای دستور نامعتبر در /start جلوگیری شد و صرفا اینجا دستورات نامعتبر دیگر را نادیده میگیریم
+    if text.startswith("/"):
+        await call_telegram("sendMessage", {
+            "chat_id": chat_id, 
+            "text": "❌ دستور ناشناس است. لطفاً از دکمه‌های منوی اصلی استفاده کنید.", 
+            "reply_markup": get_admin_inline_keyboard() if is_admin_user else get_user_inline_keyboard(actual_is_admin)
+        })
     else:
         # کاربری که متنی فرستاده اما در نشست خاصی نیست
-        markup = get_admin_inline_keyboard() if is_admin_user else get_user_inline_keyboard(actual_is_admin)
         await call_telegram("sendMessage", {
             "chat_id": chat_id,
-            "text": "شما در حال حاضر در نشست پشتیبانی نیستید.\nلطفاً از دکمه‌های منوی اصلی استفاده کنید.",
-            "reply_markup": markup
+            "text": "شما در حال حاضر در نشست پشتیبانی نیستید.\nلطفاً از دکمه‌های منوی اصلی استفاده کنید."
         })
 
 async def process_update(update):
