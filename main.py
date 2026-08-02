@@ -72,8 +72,8 @@ STRINGS = {
         "⚠️ برای فعال‌سازی کامل امکانات ربات، ابتدا در کانال‌های زیر عضو شوید و سپس روی دکمه «عضو شدم» کلیک کنید."
     ),
     "membership_confirmed": "✅ عضویت شما تأیید شد! اکنون می‌توانید از ربات استفاده کنید.",
-    "trial_already_used": "⚠️ شما قبلاً از تست رایگان ۱ روزه استفاده کرده‌اید.",
-    "trial_activated": "🎁 اشتراک تست ۱ روزه شما با موفقیت فعال شد!",
+    "trial_already_used": "⚠️ شما قبلاً از تست رایگان 1 روزه استفاده کرده‌اید.",
+    "trial_activated": "🎁 اشتراک تست 1 روزه شما با موفقیت فعال شد!",
     "wallet_info": "👛 جزئیات کیف پول شما:\n\n💰 موجودی فعلی: {balance:,} تومان\n👥 تعداد زیرمجموعه‌ها: {ref_count} نفر",
     "insufficient_balance": (
         "❌ موجودی حساب شما کافی نیست.\n\n"
@@ -95,7 +95,7 @@ STRINGS = {
     "support_forwarded": "پیام از کاربر {user_id}:\n\n{text}",
     "admin_only": "⛔ این بخش فقط برای مدیران در دسترس است.",
     "admin_panel": "🛠 به بخش ادمین خوش آمدید. دستورات مدیریتی را انتخاب کنید:",
-    "config_added": "✅ کانفیگ با موفقیت پردازش و ثبت شد . ",
+    "config_added": "✅ کانفیگ جدید با موفقیت پردازش و ثبت شد . ",
     "config_add_stopped": "⏹ عملیات افزودن کانفیگ متوقف شد.",
     "broadcast_start": "📢 متن پیام همگانی خود را ارسال کنید :",
     "broadcast_sending": "⏳ در حال ارسال همگانی...",
@@ -361,7 +361,7 @@ async def init_database_if_needed():
 
 async def background_config_checker():
     while True:
-        await asyncio.sleep(8 * 3600)  # Check every 8 hours
+        await asyncio.sleep(1 * 3600)  # Check every 1 hours
         try:
             res = await query_db("SELECT * FROM configs WHERE is_active = 1")
             configs = get_rows(res)
@@ -501,7 +501,7 @@ def get_user_inline_keyboard(is_actual_admin=False):
         [{"text": "📖 راهنما", "callback_data": "help_btn"}]
     ]
     if is_actual_admin:
-        kb.append([{"text": "👑 بازگشت به مدیریت", "callback_data": "admin_return"}])
+        kb.append([{"text": "👑 مدیریت", "callback_data": "admin_return"}])
     return {"inline_keyboard": kb}
 
 def get_admin_inline_keyboard():
@@ -604,7 +604,7 @@ async def handle_buy_service(user, chat_id):
     
     txt = "🛒 پلن مورد نظر خود را انتخاب کنید:\n\n"
     for p in plans:
-        txt += f"📌 {p['name']} \n 👥 {p['max_users']} کاربر \n 📆 {p['duration_days']} روز \n 💰 {p['price']:,} تومان\n"
+        txt += f"📌 {p['name']} \n 👥 {p['max_users']} کاربر \n 📆 {p['duration_days']} روز \n 💰 {p['price']:,} تومان\n\n"
         
     markup = get_plans_inline_keyboard(plans)
     await call_telegram("sendMessage", {
@@ -683,7 +683,7 @@ async def forward_support_message(user, message, chat_id):
         
     await call_telegram("sendMessage", {
         "chat_id": chat_id,
-        "text": "✅ پیام شما به پشتیبان‌ها ارسال شد. منتظر پاسخ باشید."
+        "text": "✅ پیام شما به پشتیبانی ارسال شد. منتظر پاسخ باشید."
     })
 
 async def create_subscription_from_plan(plan_id, user_id):
@@ -728,7 +728,7 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
             if not text or text.strip() == "":
                 await call_telegram("sendMessage", {"chat_id": chat_id, "text": "❌ متن پیام نمی‌تواند خالی باشد. مجدداً ارسال کنید:"})
                 return True
-            # ذخبره موقت متن پیام همگانی در KV برای جلوگیری از تداخل با ساخت پلن
+            # ذخیره موقت متن پیام همگانی در KV برای جلوگیری از تداخل با ساخت پلن
             await put_kv(f"broadcast_{user['id']}", text, expiration_ttl=3600)
             await execute_db("UPDATE users SET state = ? WHERE id = ?", "waiting_for_broadcast_confirm", user["id"])
             markup = {"inline_keyboard": [[{"text": "✅ تایید و ارسال", "callback_data": "adm_broadcast_yes"}, {"text": "❌ لغو", "callback_data": "admin_return"}]]}
