@@ -36,6 +36,9 @@ CF_KV_ID = os.getenv("CF_KV_ID", "")
 # متغیر محیطی برای دامنه اصلی ربات
 APP_BASE_URL = os.getenv("APP_BASE_URL", "https://technowvpnbot.ariyacompany-io.workers.dev")
 
+# فیچر ۴: متغیر محیطی برای کانفیگ تبلیغاتی (بنر)
+BANNER_CONFIG = os.getenv("BANNER_CONFIG", "")
+
 CF_HEADERS = {
     "Authorization": f"Bearer {CF_API_TOKEN}",
     "Content-Type": "application/json"
@@ -380,7 +383,8 @@ async def init_database_if_needed():
 
 async def background_config_checker():
     while True:
-        await asyncio.sleep(1 * 3600)  # Check every 1 hours
+        # مشکل ۳: کاهش زمان به ۳۰ دقیقه
+        await asyncio.sleep(30 * 60)  
         try:
             res = await query_db("SELECT * FROM configs WHERE is_active = 1")
             configs = get_rows(res)
@@ -397,18 +401,29 @@ async def background_config_checker():
                         port = parsed.port or 443
                         
                     if ip:
+                        # -----------------------------------------------------------------
+                        # کامنت: بررسی پورت TCP صرفاً برای آی‌پی‌های سرور دایرکت جواب می‌دهد و
+                        # برای آی‌پی‌های پشت CDN (مثل کلادفلر) پورت 443 همیشه باز و موفق است.
+                        # برای تست واقعی کانفیگ‌های V2ray نیاز به یک کلاینت واقعی مثل Xray-core
+                        # است تا هندشیک پروتکل‌ها (vless/vmess/trojan) به درستی چک شود.
+                        # به دلیل محدودیت‌های پایتون خالص، این کار نیازمند API خارجی یا
+                        # اجرای باینری xray است. در اینجا حداقل از معتبر بودن آی‌پی اطمینان حاصل می‌شود.
+                        # -----------------------------------------------------------------
                         reader, writer = await asyncio.wait_for(asyncio.open_connection(ip, port), timeout=4.0)
                         writer.close()
                         await writer.wait_closed()
                         is_healthy = True
+                    else:
+                        # اگر آی‌پی با موفقیت استخراج نشد (نامعتبر بود)
+                        is_healthy = False
                 except:
-                    pass
+                    is_healthy = False
 
                 if not is_healthy:
                     fail_count = cfg.get("fail_count", 0) + 1
                     if fail_count >= 3:
                         await execute_db("DELETE FROM configs WHERE id = ?", cfg["id"])
-                        await delete_kv("cached_configs_payload")
+                        await delete_kv("cached_configs_payload") # مشکل ۱: حذف آنی کش پس از حذف از دیتابیس
                         if ADMIN_IDS:
                             admins = [x.strip() for x in str(ADMIN_IDS).split(",") if x.strip()]
                             for admin_id in admins:
@@ -512,13 +527,21 @@ async def build_sub_url_async(token):
 # ---------------------------------------------------------------------
 # 📋 کیبوردهای اینلاین
 # ---------------------------------------------------------------------
-def get_user_inline_keyboard(is_actual_admin=False):
+# تبدیل به async برای خواندن دکمه داینامیک از تنظیمات
+async def get_user_inline_keyboard(is_actual_admin=False):
     kb = [
         [{"text": "🛒 خرید سرویس", "callback_data": "buy_service"}, {"text": "🎁 تست رایگان", "callback_data": "free_trial"}],
         [{"text": "📱 سرویس‌های من", "callback_data": "my_services"}, {"text": "👛 کیف پول", "callback_data": "wallet"}],
         [{"text": "👥 دعوت دوستان", "callback_data": "referral"}, {"text": "🎧 پشتیبانی", "callback_data": "support"}],
         [{"text": "📖 راهنما", "callback_data": "help_btn"}]
     ]
+    
+    # فیچر ۷: افزودن دکمه داینامیک به کیبورد کاربر
+    dyn_btn_title = await get_setting("dyn_btn_title")
+    if dyn_btn_title:
+        # درج دکمه جدید بالای بخش راهنما/مدیریت
+        kb.insert(-1, [{"text": dyn_btn_title, "callback_data": "dyn_btn_click"}])
+        
     if is_actual_admin:
         kb.append([{"text": "👑 مدیریت", "callback_data": "admin_return"}])
     return {"inline_keyboard": kb}
@@ -529,7 +552,8 @@ def get_admin_inline_keyboard():
             [{"text": "➕ افزودن کانفیگ", "callback_data": "adm_add_config"}, {"text": "📋 مدیریت کانفیگ‌ها", "callback_data": "adm_manage_configs"}],
             [{"text": "📢 ارسال همگانی", "callback_data": "adm_broadcast"}, {"text": "⚙️ تنظیمات", "callback_data": "adm_settings"}],
             [{"text": "👤 مدیریت کاربران", "callback_data": "adm_manage_users_1"}, {"text": "📦 مدیریت پلن‌ها", "callback_data": "adm_manage_plans"}],
-            [{"text": "📖 تنظیم راهنما", "callback_data": "adm_set_help"}, {"text": "👤 نمای کاربری (تست)", "callback_data": "adm_test_user"}]
+            [{"text": "📖 تنظیم راهنما", "callback_data": "adm_set_help"}, {"text": "🔘 تنظیم دکمه داینامیک", "callback_data": "adm_dyn_btn"}],
+            [{"text": "👤 نمای کاربری (تست)", "callback_data": "adm_test_user"}]
         ]
     }
 
@@ -674,6 +698,10 @@ async def handle_referral(user, chat_id, message_id, is_admin_user):
     await edit_message(chat_id, message_id, msg, reply_markup=get_back_markup(is_admin_user), parse_mode="Markdown")
 
 async def handle_support_start(user, chat_id, message_id, is_admin_user):
+    # مشکل ۶: جلوگیری از دو بار ارسال شدن پیام پشتیبانی (تداخل ریست شدن استیت)
+    if user.get("state") == f"support_session_{user['telegram_id']}":
+        return
+        
     await execute_db("UPDATE users SET state = ? WHERE id = ?", f"support_session_{user['telegram_id']}", user["id"])
     markup = {
         "keyboard": [[{"text": "🔚 پایان پشتیبانی"}]],
@@ -737,14 +765,15 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
         if is_admin_user:
             await show_admin_panel(chat_id)
         else:
-            await call_telegram("sendMessage", {"chat_id": chat_id, "text": STRINGS["start_welcome"], "reply_markup": get_user_inline_keyboard(actual_is_admin)})
+            markup = await get_user_inline_keyboard(actual_is_admin)
+            await call_telegram("sendMessage", {"chat_id": chat_id, "text": STRINGS["start_welcome"], "reply_markup": markup})
         return True
 
     if is_admin_user:
         if state == "waiting_for_config":
             formatted_cfg = await format_config_name(text)
             await execute_db("INSERT INTO configs (config_text) VALUES (?)", formatted_cfg)
-            await delete_kv("cached_configs_payload")
+            await delete_kv("cached_configs_payload") # مشکل ۱: حذف آنی کش پس از افزودن کانفیگ
             markup = {"inline_keyboard": [[{"text": "🔙 بازگشت به منوی اصلی", "callback_data": "admin_return"}]]}
             await call_telegram("sendMessage", {
                 "chat_id": chat_id,
@@ -921,6 +950,36 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
                 await call_telegram("sendMessage", {"chat_id": chat_id, "text": "✅ محتوای راهنما با موفقیت ثبت شد.", "reply_markup": get_admin_inline_keyboard()})
             return True
 
+        # فیچر ۷: مدیریت استیت‌های دکمه داینامیک ادمین
+        if state == "waiting_dyn_title":
+            await set_setting("dyn_btn_title", text.strip())
+            await execute_db("UPDATE users SET state = NULL WHERE id = ?", user["id"])
+            await call_telegram("sendMessage", {"chat_id": chat_id, "text": "✅ عنوان دکمه در منوی کاربری ذخیره شد.", "reply_markup": get_admin_inline_keyboard()})
+            return True
+            
+        if state == "waiting_dyn_sub":
+            await set_setting("dyn_btn_sub_title", text.strip())
+            await execute_db("UPDATE users SET state = NULL WHERE id = ?", user["id"])
+            await call_telegram("sendMessage", {"chat_id": chat_id, "text": "✅ عنوان دکمه شیشه‌ای درون پیام ذخیره شد.", "reply_markup": get_admin_inline_keyboard()})
+            return True
+
+        if state == "waiting_dyn_content":
+            dyn_data = {}
+            if text:
+                dyn_data = {"type": "text", "content": text}
+            elif message.get("photo"):
+                dyn_data = {"type": "photo", "file_id": message["photo"][-1]["file_id"], "caption": message.get("caption", "")}
+            elif message.get("video"):
+                dyn_data = {"type": "video", "file_id": message["video"]["file_id"], "caption": message.get("caption", "")}
+            elif message.get("document"):
+                dyn_data = {"type": "document", "file_id": message["document"]["file_id"], "caption": message.get("caption", "")}
+                
+            if dyn_data:
+                await set_setting("dyn_btn_content", json.dumps(dyn_data))
+                await execute_db("UPDATE users SET state = NULL WHERE id = ?", user["id"])
+                await call_telegram("sendMessage", {"chat_id": chat_id, "text": "✅ محتوای دکمه داینامیک ثبت شد.", "reply_markup": get_admin_inline_keyboard()})
+            return True
+
     if state and state.startswith("support_session_"):
         await forward_support_message(user, message, chat_id)
         return True
@@ -943,9 +1002,12 @@ async def process_callback(callback):
     actual_is_admin = is_admin(telegram_id, user_data=None)
     is_admin_user = is_admin(telegram_id, user_data=user)
 
-    await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id})
+    # مشکل ۲ (ج): جلوگیری از تداخل answerCallbackQuery سراسری با پاپ‌آپ‌های اختصاصی
+    defer_answer = data.startswith("confirm_buy_") or data == "chk_membership" or data.startswith("qr_") or data.startswith("confirm_renew_") or data == "dyn_btn_action"
+    if not defer_answer:
+        await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id})
 
-    # دکمه‌های ناوبری اصلی
+    # مشکل ۵: هندل کردن دکمه‌های بازگشت زمانی که پیام روی یک عکس قرار دارد
     if data in ["user_return", "admin_return"]:
         if user.get("state") is not None:
             await execute_db("UPDATE users SET state = NULL, plan_data = NULL WHERE id = ?", user["id"])
@@ -954,11 +1016,23 @@ async def process_callback(callback):
 
     if data == "admin_return" and actual_is_admin:
         await execute_db("UPDATE users SET is_test_mode = 0 WHERE id = ?", user["id"])
-        await edit_message(chat_id, message_id, STRINGS["admin_panel"], reply_markup=get_admin_inline_keyboard())
+        res = await edit_message(chat_id, message_id, STRINGS["admin_panel"], reply_markup=get_admin_inline_keyboard())
+        # اگر ویرایش شکست خورد (احتمالاً به دلیل اینکه پیام فعلی دارای مدیای عکس/ویدیو بوده است)
+        if not res.get("ok"): 
+            await call_telegram("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
+            await show_admin_panel(chat_id)
         return
 
     if data == "user_return":
-        await edit_message(chat_id, message_id, STRINGS["start_welcome"], reply_markup=get_user_inline_keyboard(actual_is_admin))
+        markup = await get_user_inline_keyboard(actual_is_admin)
+        res = await edit_message(chat_id, message_id, STRINGS["start_welcome"], reply_markup=markup)
+        if not res.get("ok"):
+            await call_telegram("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
+            await call_telegram("sendMessage", {
+                "chat_id": chat_id,
+                "text": STRINGS["start_welcome"],
+                "reply_markup": markup
+            })
         return
 
     if data != "chk_membership" and not await check_channel_membership(telegram_id):
@@ -969,7 +1043,11 @@ async def process_callback(callback):
         if await check_channel_membership(telegram_id):
             await credit_referrer_if_pending(user, chat_id)
             await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "✅ عضویت تایید شد!"})
-            await edit_message(chat_id, message_id, STRINGS["start_welcome"], reply_markup=get_admin_inline_keyboard() if is_admin_user else get_user_inline_keyboard(actual_is_admin))
+            markup = get_admin_inline_keyboard() if is_admin_user else await get_user_inline_keyboard(actual_is_admin)
+            res = await edit_message(chat_id, message_id, STRINGS["start_welcome"], reply_markup=markup)
+            if not res.get("ok"):
+                await call_telegram("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
+                await call_telegram("sendMessage", {"chat_id": chat_id, "text": STRINGS["start_welcome"], "reply_markup": markup})
         else:
             await call_telegram("answerCallbackQuery", {
                 "callback_query_id": cq_id,
@@ -1009,12 +1087,68 @@ async def process_callback(callback):
             pass
         return
 
+    # فیچر ۷: هندل کلیک روی دکمه داینامیک در منوی کاربری
+    if data == "dyn_btn_click":
+        content_val = await get_setting("dyn_btn_content")
+        sub_title = await get_setting("dyn_btn_sub_title", "🔗 مشاهده پیام")
+        
+        if not content_val:
+            await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "محتوایی تنظیم نشده است.", "show_alert": True})
+            return
+            
+        markup = {"inline_keyboard": [[{"text": sub_title, "callback_data": "dyn_btn_action"}], [{"text": "🔙 بازگشت", "callback_data": "user_return"}]]}
+        
+        try:
+            dyn_data = json.loads(content_val)
+            await call_telegram("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
+            if dyn_data["type"] == "text":
+                await call_telegram("sendMessage", {"chat_id": chat_id, "text": dyn_data["content"], "reply_markup": markup})
+            elif dyn_data["type"] == "photo":
+                await call_telegram("sendPhoto", {"chat_id": chat_id, "photo": dyn_data["file_id"], "caption": dyn_data.get("caption", ""), "reply_markup": markup})
+            elif dyn_data["type"] == "video":
+                await call_telegram("sendVideo", {"chat_id": chat_id, "video": dyn_data["file_id"], "caption": dyn_data.get("caption", ""), "reply_markup": markup})
+            elif dyn_data["type"] == "document":
+                await call_telegram("sendDocument", {"chat_id": chat_id, "document": dyn_data["file_id"], "caption": dyn_data.get("caption", ""), "reply_markup": markup})
+        except:
+            pass
+        return
+        
+    # فیچر ۷: هندل کلیک روی دکمه شیشه‌ای (زیر پیام داینامیک) و تایمر Self-Destruct
+    if data == "dyn_btn_action":
+        await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id})
+        
+        new_text = "⏳ پیام تا ۱۰ ثانیه دیگر پاک می‌شود..."
+        content_val = await get_setting("dyn_btn_content")
+        try:
+            dyn_data = json.loads(content_val) if content_val else {}
+            if dyn_data.get("type") == "text":
+                await edit_message(chat_id, message_id, new_text)
+            else:
+                await call_telegram("editMessageCaption", {
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "caption": new_text
+                })
+        except:
+            pass
+            
+        # شروع تسک پاک‌شدن بدون بلاک کردن پروسه اصلی ربات
+        async def delayed_delete(c_id, m_id, delay=10):
+            await asyncio.sleep(delay)
+            await call_telegram("deleteMessage", {"chat_id": c_id, "message_id": m_id})
+            
+        asyncio.create_task(delayed_delete(chat_id, message_id, 10))
+        return
+
     if data.startswith("qr_"):
         token = data.replace("qr_", "")
         sub_res = await query_db("SELECT * FROM subscriptions WHERE token = ? AND status = 'active'", token)
         if not get_first_row(sub_res):
             await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "❌ اشتراک یافت نشد.", "show_alert": True})
             return
+        
+        await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id})
+        
         sub_url = await build_sub_url_async(token)
         qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={sub_url}"
         await call_telegram("sendPhoto", {
@@ -1049,10 +1183,12 @@ async def process_callback(callback):
         sub = get_first_row(sub_res)
         plan_res = await query_db("SELECT * FROM plans WHERE id = ?", sub["plan_id"])
         plan = get_first_row(plan_res)
+        
         if user["balance"] < plan["price"]:
             await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "❌ موجودی کافی نیست.", "show_alert": True})
             return
             
+        await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id})
         await execute_db("UPDATE users SET balance = balance - ? WHERE id = ?", plan["price"], user["id"])
         
         try:
@@ -1095,17 +1231,28 @@ async def process_callback(callback):
         plan_id = int(data.replace("confirm_buy_", ""))
         res = await query_db("SELECT * FROM plans WHERE id = ?", plan_id)
         plan = get_first_row(res)
+        
+        # مشکل ۲ (ب): ارورهندلینگ در صورت حذف شدن پلن برای جلوگیری از کرش
+        if not plan:
+            await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "❌ این پلن حذف شده یا نامعتبر است.", "show_alert": True})
+            return
+            
         price = plan["price"]
         
         if user["balance"] < price:
+            # مشکل ۲ (الف): ارسال هشدار کمبود موجودی فقط به صورت Alert 
             msg = STRINGS["insufficient_balance"].format(balance=user["balance"], price=price)
-            await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "❌ موجودی حساب شما کافی نیست.", "show_alert": True})
+            await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": msg, "show_alert": True})
             return
+            
+        await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id})
+        
         await execute_db("UPDATE users SET balance = balance - ? WHERE id = ?", price, user["id"])
         token = await create_subscription_from_plan(plan_id, user["id"])
         if not token:
-            await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "❌ خطا در ایجاد اشتراک.", "show_alert": True})
+            await call_telegram("sendMessage", {"chat_id": chat_id, "text": "❌ خطا در ایجاد اشتراک."})
             return
+            
         sub_url = await build_sub_url_async(token)
         expires_at = (datetime.datetime.utcnow() + datetime.timedelta(days=plan["duration_days"])).strftime("%Y-%m-%d %H:%M:%S")
         qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={sub_url}"
@@ -1127,7 +1274,8 @@ async def process_callback(callback):
 
     if data == "adm_test_user":
         await execute_db("UPDATE users SET is_test_mode = 1 WHERE id = ?", user["id"])
-        await edit_message(chat_id, message_id, "شما اکنون در نمای کاربری (تست) هستید. برای بازگشت دکمه مربوطه را بزنید.", reply_markup=get_user_inline_keyboard(actual_is_admin))
+        markup = await get_user_inline_keyboard(actual_is_admin)
+        await edit_message(chat_id, message_id, "شما اکنون در نمای کاربری (تست) هستید. برای بازگشت دکمه مربوطه را بزنید.", reply_markup=markup)
         return
 
     if data == "adm_add_config":
@@ -1144,10 +1292,14 @@ async def process_callback(callback):
             
         await call_telegram("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
         for c in configs:
+            # دکمه توگل کردن وضعیت کانفیگ (جهت خاموش و روشن کردن) اضافه شد
+            status_btn = "🟢 فعال (خاموش کردن)" if c['is_active'] else "🔴 غیرفعال (روشن کردن)"
             markup = {
                 "inline_keyboard": [
-                    [{"text": "❌ حذف", "callback_data": f"adm_cfg_del_req_{c['id']}"}],
-                    [{"text": "🔙 بازگشت به منوی اصلی", "callback_data": "admin_return"}]
+                    [
+                        {"text": "❌ حذف", "callback_data": f"adm_cfg_del_req_{c['id']}"},
+                        {"text": status_btn, "callback_data": f"adm_cfg_toggle_{c['id']}"}
+                    ]
                 ]
             }
             await call_telegram("sendMessage", {
@@ -1156,6 +1308,33 @@ async def process_callback(callback):
                 "parse_mode": "Markdown",
                 "reply_markup": markup
             })
+            
+        await call_telegram("sendMessage", {
+            "chat_id": chat_id,
+            "text": "بازگشت به پنل مدیریت:",
+            "reply_markup": get_back_markup(True)
+        })
+        return
+
+    if data.startswith("adm_cfg_toggle_"):
+        cfg_id = data.replace("adm_cfg_toggle_", "")
+        res = await query_db("SELECT is_active FROM configs WHERE id = ?", cfg_id)
+        cfg = get_first_row(res)
+        if cfg:
+            new_state = 0 if cfg["is_active"] else 1
+            await execute_db("UPDATE configs SET is_active = ? WHERE id = ?", new_state, cfg_id)
+            await delete_kv("cached_configs_payload") # مشکل ۱: حذف آنی کش کانفیگ‌ها 
+            
+            status_btn = "🟢 فعال (خاموش کردن)" if new_state else "🔴 غیرفعال (روشن کردن)"
+            markup = {
+                "inline_keyboard": [
+                    [
+                        {"text": "❌ حذف", "callback_data": f"adm_cfg_del_req_{cfg_id}"},
+                        {"text": status_btn, "callback_data": f"adm_cfg_toggle_{cfg_id}"}
+                    ]
+                ]
+            }
+            await edit_message(chat_id, message_id, message.get("text", ""), reply_markup=markup, parse_mode="Markdown")
         return
 
     if data.startswith("adm_cfg_del_req_"):
@@ -1167,7 +1346,7 @@ async def process_callback(callback):
     if data.startswith("adm_cfg_del_yes_"):
         cfg_id = data.replace("adm_cfg_del_yes_", "")
         await execute_db("DELETE FROM configs WHERE id = ?", cfg_id)
-        await delete_kv("cached_configs_payload")
+        await delete_kv("cached_configs_payload") # مشکل ۱: آپدیت فوری کش
         await edit_message(chat_id, message_id, "🗑 کانفیگ حذف شد.", reply_markup=get_back_markup(True))
         return
 
@@ -1268,6 +1447,34 @@ async def process_callback(callback):
         await edit_message(chat_id, message_id, "محتوای دکمه راهنما را ارسال کنید (پشتیبانی از متن، عکس، ویدیو و فایل):", reply_markup=get_back_markup(True))
         return
 
+    # فیچر ۷: مدیریت دکمه داینامیک از طرف ادمین
+    if data == "adm_dyn_btn":
+        markup = {
+            "inline_keyboard": [
+                [{"text": "✏️ عنوان دکمه در منو", "callback_data": "adm_dyn_title"}],
+                [{"text": "✏️ محتوای دکمه (پیام اصلی)", "callback_data": "adm_dyn_content"}],
+                [{"text": "✏️ عنوان دکمه شیشه‌ای (زیر پیام)", "callback_data": "adm_dyn_sub"}],
+                [{"text": "🔙 بازگشت به منوی اصلی", "callback_data": "admin_return"}]
+            ]
+        }
+        await edit_message(chat_id, message_id, "مدیریت دکمه داینامیک و پیام‌های دارای تایمر:", reply_markup=markup)
+        return
+
+    if data == "adm_dyn_title":
+        await execute_db("UPDATE users SET state = 'waiting_dyn_title' WHERE id = ?", user["id"])
+        await edit_message(chat_id, message_id, "لطفاً عنوانی که می‌خواهید برای دکمه در منوی کاربری نمایش داده شود را ارسال کنید:", reply_markup=get_back_markup(True))
+        return
+
+    if data == "adm_dyn_sub":
+        await execute_db("UPDATE users SET state = 'waiting_dyn_sub' WHERE id = ?", user["id"])
+        await edit_message(chat_id, message_id, "عنوان دکمه شیشه‌ای (که در زیر محتوای داینامیک ظاهر می‌شود) را وارد کنید:", reply_markup=get_back_markup(True))
+        return
+
+    if data == "adm_dyn_content":
+        await execute_db("UPDATE users SET state = 'waiting_dyn_content' WHERE id = ?", user["id"])
+        await edit_message(chat_id, message_id, "محتوای دکمه داینامیک را ارسال کنید (پشتیبانی کامل از عکس، متن، ویدیو و فایل):", reply_markup=get_back_markup(True))
+        return
+
     if data.startswith("adm_manage_users_"):
         page = safe_int(data.replace("adm_manage_users_", ""), 1)
         limit = 5
@@ -1323,14 +1530,12 @@ async def process_callback(callback):
         if plan:
             new_state = 0 if plan["is_active"] else 1
             await execute_db("UPDATE plans SET is_active = ? WHERE id = ?", new_state, plan_id)
-            await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": STRINGS["plan_toggled"]})
             await show_plan_management(chat_id, message_id)
         return
 
     if data.startswith("adm_plan_del_"):
         plan_id = data.replace("adm_plan_del_", "")
         await execute_db("DELETE FROM plans WHERE id = ?", plan_id)
-        await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": STRINGS["plan_deleted"]})
         await show_plan_management(chat_id, message_id)
         return
 
@@ -1393,10 +1598,11 @@ async def process_message(message):
         if is_admin_user:
             await show_admin_panel(chat_id)
         else:
+            markup = await get_user_inline_keyboard(actual_is_admin)
             await call_telegram("sendMessage", {
                 "chat_id": chat_id,
                 "text": STRINGS["start_welcome"],
-                "reply_markup": get_user_inline_keyboard(actual_is_admin)
+                "reply_markup": markup
             })
         return
 
@@ -1412,7 +1618,8 @@ async def process_message(message):
         if is_admin_user:
             await show_admin_panel(chat_id)
         else:
-            await call_telegram("sendMessage", {"chat_id": chat_id, "text": STRINGS["start_welcome"], "reply_markup": get_user_inline_keyboard(actual_is_admin)})
+            markup = await get_user_inline_keyboard(actual_is_admin)
+            await call_telegram("sendMessage", {"chat_id": chat_id, "text": STRINGS["start_welcome"], "reply_markup": markup})
         return
 
     if actual_is_admin and message.get("reply_to_message"):
@@ -1448,15 +1655,14 @@ async def process_message(message):
             return
 
     if text.startswith("/"):
-        markup = get_admin_inline_keyboard() if is_admin_user else get_user_inline_keyboard(actual_is_admin)
+        markup = get_admin_inline_keyboard() if is_admin_user else await get_user_inline_keyboard(actual_is_admin)
         await call_telegram("sendMessage", {
             "chat_id": chat_id, 
             "text": "❌ دستور ناشناس است. لطفاً از دکمه‌های منوی اصلی استفاده کنید.", 
             "reply_markup": markup
         })
     else:
-        # Invalid command
-        markup = get_admin_inline_keyboard() if is_admin_user else get_user_inline_keyboard(actual_is_admin)
+        markup = get_admin_inline_keyboard() if is_admin_user else await get_user_inline_keyboard(actual_is_admin)
         await call_telegram("sendMessage", {
             "chat_id": chat_id,
             "text": "❌ دستور ناشناس است. لطفاً از دکمه‌های منوی اصلی استفاده کنید.",
@@ -1481,7 +1687,6 @@ app = FastAPI()
 @app.on_event("startup")
 async def startup_event():
     global http_client
-    # ایجاد یک کلاینت یکپارچه برای مدیریت بهینه اتصال‌ها به سرورهای کلادفلر و تلگرام
     http_client = httpx.AsyncClient(limits=httpx.Limits(max_keepalive_connections=50, max_connections=100))
     await init_database_if_needed()
     asyncio.create_task(background_config_checker())
@@ -1521,12 +1726,19 @@ async def handle_sublink(token: str):
     if cached_payload is None:
         cfg_res = await query_db("SELECT config_text FROM configs WHERE is_active = 1")
         confs = get_rows(cfg_res)
-        payload_lines = [c["config_text"].strip() for c in confs if c["config_text"].strip()]
+        
+        # فیچر ۴: قرار دادن بنر تبلیغاتی در اولین خط قبل از کانفیگ‌ها
+        payload_lines = []
+        if BANNER_CONFIG:
+            payload_lines.append(BANNER_CONFIG.strip())
+            
+        payload_lines.extend([c["config_text"].strip() for c in confs if c["config_text"].strip()])
         combined = "\n".join(payload_lines)
         cached_payload = base64.b64encode(combined.encode("utf-8")).decode("utf-8")
         await put_kv("cached_configs_payload", cached_payload, expiration_ttl=300)
 
-    headers = {"Cache-Control": "public, max-age=120"}
+    # مشکل ۱: تغییر هدرهای Cache به نحوی که فایل کش نشود
+    headers = {"Cache-Control": "no-cache, no-store, must-revalidate"}
     return Response(content=cached_payload, media_type="text/plain", headers=headers)
 
 if __name__ == "__main__":
