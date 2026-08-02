@@ -3,7 +3,7 @@
 ربات مدیریت ساب‌لینک v2 – نسخه Railway + Cloudflare API
 - بازنویسی شده برای اجرای مستقل در پایتون استاندارد
 - اتصال به D1 و KV از طریق Cloudflare API
-- بهینه‌سازی شده با Connection Pooling و Local Caching
+- به‌روزرسانی: تنظیم تایتل اختصاصی ساب‌لینک، اصلاح دکمه پشتیبانی و تزریق کانفیگ نمایشی
 """
 
 import os
@@ -36,8 +36,9 @@ CF_KV_ID = os.getenv("CF_KV_ID", "")
 # متغیر محیطی برای دامنه اصلی ربات
 APP_BASE_URL = os.getenv("APP_BASE_URL", "https://technowvpnbot.ariyacompany-io.workers.dev")
 
-# بنر آگهی در صدر سابلینک
-BANNER_CONFIG = os.getenv("BANNER_CONFIG", "")
+# بنر آگهی در صدر سابلینک (کانفیگ نامعتبر نمایشی برای حل مشکل ساختار و پیام‌رسانی)
+DEFAULT_BANNER = "vless://89210719-c3b9-4053-9c75-c0c3396fabd3@Update:7878?encryption=none&security=none&type=ws&path=%2F#%F0%9F%93%A2%D9%87%D8%B1%20%D8%B1%D9%88%D8%B2%20%D9%84%DB%8C%D9%86%DA%A9%20%D8%AE%D9%88%D8%AF%20%D8%B1%D8%A7%20%D8%A8%D8%B1%D9%88%D8%B2%D8%B1%D8%B3%D8%A7%D9%86%DB%8C%20%DA%A9%D9%86%DB%8C%D8%AF%F0%9F%93%A2"
+BANNER_CONFIG = os.getenv("BANNER_CONFIG", DEFAULT_BANNER)
 
 CF_HEADERS = {
     "Authorization": f"Bearer {CF_API_TOKEN}",
@@ -965,15 +966,30 @@ async def process_callback(callback):
     is_admin_user = is_admin(telegram_id, user_data=user)
 
     defer_answer = data.startswith("confirm_buy_") or data == "chk_membership" or data.startswith("qr_") or data.startswith("confirm_renew_")
-    if not defer_answer:
+    if not defer_answer and data != "end_support":
         await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id})
 
-    # پایان پشتیبانی بصورت پاپ‌آپ و ادیت پیام
+    # پایان پشتیبانی بصورت پاپ‌آپ و ادیت پیام و بازگشت به منو
     if data == "end_support":
         await execute_db("UPDATE users SET state = NULL WHERE id = ?", user["id"])
-        await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "✅ جلسه پشتیبانی بسته شد.", "show_alert": True})
+        await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "✅ نشست پایان یافت.", "show_alert": True})
+        
+        # تغییر متن پیام فعلی
+        await edit_message(chat_id, message_id, "🔚 نشست پشتیبانی پایان یافت.\n\nاین پیام پس از ۵ ثانیه پاک خواهد شد...", reply_markup=None)
+        
+        # انتظار ۵ ثانیه
+        await asyncio.sleep(5)
+        
+        # پاک کردن پیام پشتیبانی
+        await call_telegram("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
+        
+        # ارسال مجدد منوی اصلی
         markup = await get_user_inline_keyboard(actual_is_admin)
-        await edit_message(chat_id, message_id, STRINGS["start_welcome"], reply_markup=markup)
+        await call_telegram("sendMessage", {
+            "chat_id": chat_id,
+            "text": STRINGS["start_welcome"],
+            "reply_markup": markup
+        })
         return
 
     if data in ["user_return", "admin_return"]:
@@ -1653,10 +1669,13 @@ async def handle_sublink(token: str):
     # تنظیمات مربوط به Title و آپدیت خودکار
     title = "🌐 @TechNowVPNBOT🛜"
     title_b64 = base64.b64encode(title.encode('utf-8')).decode('utf-8')
+    encoded_title = urllib.parse.quote(title)
+    
     headers = {
         "Cache-Control": "no-cache, no-store, must-revalidate",
         "profile-title": f"base64:{title_b64}",
-        "profile-update-interval": "12"
+        "profile-update-interval": "12",
+        "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_title}"
     }
     
     return Response(content=cached_payload, media_type="text/plain", headers=headers)
