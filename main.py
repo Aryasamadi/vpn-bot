@@ -512,7 +512,7 @@ async def background_external_updater():
             print(f"[CAT] External updater error: {e}")
 
 # =====================================================================
-# 🧪 توابع چک سلامت کانفیگ‌های داخلی (چکر خودکار)
+# 🧪 چک سلامت کانفیگ‌های داخلی (چکر خودکار)
 # =====================================================================
 async def background_config_checker():
     """چک کردن دوره‌ای سلامت کانفیگ‌های داخلی (به جز بنر با id=0)"""
@@ -553,6 +553,73 @@ async def background_config_checker():
                     await execute_db("UPDATE configs SET fail_count = 0 WHERE id = ?", cfg["id"])
         except Exception as e:
             print(f"[CAT] Config checker error: {e}")
+
+# =====================================================================
+# 🧪 یادآور انقضای اشتراک‌ها
+# =====================================================================
+async def background_expiration_notifier():
+    """ارسال یادآوری انقضای اشتراک به کاربران (۱ ساعت، ۲۴ ساعت، ۳ روز مانده)"""
+    while True:
+        await asyncio.sleep(15 * 60)  # هر ۱۵ دقیقه
+        try:
+            now = datetime.datetime.utcnow()
+            query = """
+                SELECT s.id as sub_id, s.token, s.expires_at, s.notified_level,
+                       u.telegram_id, u.balance
+                FROM subscriptions s
+                JOIN users u ON s.user_id = u.id
+                WHERE s.status = 'active'
+            """
+            res = await query_db(query)
+            subs = get_rows(res)
+
+            for sub in subs:
+                try:
+                    expires_at = datetime.datetime.strptime(sub["expires_at"], "%Y-%m-%d %H:%M:%S")
+                except Exception:
+                    continue
+
+                time_left = expires_at - now
+                time_left_sec = time_left.total_seconds()
+
+                if time_left_sec <= 0:
+                    continue
+
+                notified_level = sub.get("notified_level", 0)
+                tg_id = sub["telegram_id"]
+                sub_url = await build_sub_url_async(sub["token"])
+                msg = ""
+                new_level = notified_level
+
+                if time_left_sec <= 3600 and notified_level < 3:
+                    msg = (f"⚠️ **هشدار خیلی مهم** ⚠️\n\nفقط **۱ ساعت** تا پایان اعتبار سرویس شما باقی مانده است!\n\n"
+                           f"🔗 لینک سرویس: `{sub_url}`\n💰 موجودی کیف پول: {sub['balance']:,} تومان\n\n"
+                           f"جهت جلوگیری از قطعی اینترنت، سریعاً از طریق دکمه زیر تمدید کنید.")
+                    new_level = 3
+                elif time_left_sec <= 86400 and notified_level < 2:
+                    msg = (f"⏳ **یادآوری تمدید**\n\nسرویس شما **۲۴ ساعت** دیگر منقضی خواهد شد.\n\n"
+                           f"🔗 لینک سرویس: `{sub_url}`\n💰 موجودی کیف پول: {sub['balance']:,} تومان\n\n"
+                           f"لطفاً پیش از اتمام زمان، اکانت خود را شارژ و تمدید نمایید.")
+                    new_level = 2
+                elif time_left_sec <= 259200 and notified_level < 1:
+                    msg = (f"📅 **اطلاعیه سرویس**\n\nکاربر گرامی، تنها **۳ روز** تا پایان اشتراک شما باقی مانده است.\n\n"
+                           f"🔗 لینک سرویس: `{sub_url}`\n💰 موجودی کیف پول: {sub['balance']:,} تومان\n\n"
+                           f"می‌توانید با دعوت دوستان حساب خود را رایگان شارژ کنید یا تمدید نمایید.")
+                    new_level = 1
+
+                if msg:
+                    markup = {"inline_keyboard": [[{"text": "♻️ تمدید سریع سرویس", "callback_data": f"renew_sub_{sub['token']}"}]]}
+                    res_tg = await call_telegram("sendMessage", {
+                        "chat_id": int(tg_id),
+                        "text": msg,
+                        "parse_mode": "Markdown",
+                        "reply_markup": markup
+                    })
+                    if res_tg.get("ok"):
+                        await execute_db("UPDATE subscriptions SET notified_level = ? WHERE id = ?", new_level, sub["sub_id"])
+
+        except Exception as e:
+            print(f"[CAT] Notifier error: {e}")
 
 # ---------------------------------------------------------------------
 # 🧑‍💼 توابع کاربر و ادمین
