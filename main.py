@@ -11,6 +11,7 @@
 3) نمایش نام قشنگ کانال در دکمه‌ها:
    - اگر در force_channels اسم دستی ندهی، از getChat عنوان کانال را می‌گیرد و در KV cache می‌کند.
    - فرمت دستی همچنان پشتیبانی می‌شود: @username|نام دلخواه
+4) تایتل پویای ساب‌لینک بر اساس پلن کاربر (مدت، تعداد کاربر، وضعیت، روزهای باقی‌مانده)
 """
 
 import os
@@ -332,7 +333,6 @@ async def format_config_name(config_text):
 
     country_str = "🌍 Unknown"
     try:
-        # توجه: این سرویس HTTP است؛ دست نخورده باقی گذاشته شد تا ساختار کلی تغییر نکند
         resp = await http_client.get(f"http://ip-api.com/json/{ip}?fields=country,countryCode", timeout=5.0)
         data = resp.json()
         if data.get("country"):
@@ -609,7 +609,6 @@ async def check_channel_membership(telegram_id, force_refresh=False):
 
     force_channels = await get_setting("force_channels", "")
     if not force_channels:
-        # اگر کانال اجباری نداریم، کش کوتاه
         set_local_cache(cache_key, True, 30)
         return True
 
@@ -623,7 +622,6 @@ async def check_channel_membership(telegram_id, force_refresh=False):
             "user_id": int(telegram_id)
         })
         if not res.get("ok"):
-            # کش منفی خیلی کوتاه تا اگر سریع عضو شد، گیر نکند
             set_local_cache(cache_key, False, 5)
             return False
 
@@ -632,7 +630,6 @@ async def check_channel_membership(telegram_id, force_refresh=False):
             set_local_cache(cache_key, False, 5)
             return False
 
-    # کش مثبت کوتاه‌تر تا خروج سریع‌تر اعمال شود
     set_local_cache(cache_key, True, 20)
     return True
 
@@ -693,9 +690,6 @@ async def send_membership_requirement(chat_id, message_id=None):
         ch_id_raw = ch_parts[0].strip()
         ch_id = normalize_channel_id(ch_id_raw)
 
-        # ✅ نمایش اسم قشنگ:
-        # اگر خودت اسم بدهی (بعد از |)، همان را نشان بده
-        # اگر ندادی، عنوان کانال را با getChat می‌گیرد و cache می‌کند
         if len(ch_parts) > 1 and ch_parts[1].strip():
             ch_name = ch_parts[1].strip()
         else:
@@ -1116,7 +1110,6 @@ async def process_callback(callback):
     if not defer_answer and data != "end_support":
         await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id})
 
-    # دکمه پایان پشتیبانی (اصلاح شده طبق درخواست)
     if data == "end_support":
         await execute_db("UPDATE users SET state = NULL WHERE id = ?", user["id"])
 
@@ -1163,12 +1156,10 @@ async def process_callback(callback):
             })
         return
 
-    # ✅ چک عضویت برای همه callback ها (به جز chk_membership) با کش کوتاه انجام می‌شود
     if data != "chk_membership" and not await check_channel_membership(telegram_id, force_refresh=False):
         await send_membership_requirement(chat_id, message_id)
         return
 
-    # ✅ دکمه "عضو شدم" همیشه fresh چک می‌کند (حل مشکل اصلی شما)
     if data == "chk_membership":
         if await check_channel_membership(telegram_id, force_refresh=True):
             await credit_referrer_if_pending(user, chat_id)
@@ -1790,29 +1781,47 @@ async def handle_sublink(token: str):
     except ValueError:
         expires_at = datetime.datetime.strptime(expires_str.split(".")[0], "%Y-%m-%d %H:%M:%S")
 
-    if expires_at < datetime.datetime.utcnow():
+    now = datetime.datetime.utcnow()
+    if expires_at < now:
         await execute_db("UPDATE subscriptions SET status = 'expired' WHERE id = ?", sub["id"])
         return Response(content="", media_type="text/plain")
 
-    cached_payload = await get_kv("cached_configs_payload")
+    # ------ ساخت تایتل پویا بر اساس پلن و تاریخ انقضا ------
+    plan_title = "نامشخص"
+    days_left = (expires_at - now).days
+    days_left_str = f"{days_left} روز مانده" if days_left >= 0 else "منقضی شده"
 
+    plan_id = sub.get("plan_id")
+    if plan_id:
+        plan_res = await query_db("SELECT duration_days, max_users FROM plans WHERE id = ?", plan_id)
+        plan = get_first_row(plan_res)
+        if plan:
+            duration = plan.get("duration_days", 0)
+            max_users = plan.get("max_users", 1)
+            plan_title = f"{duration} روزه | {max_users} کاربره | نامحدود | {days_left_str}"
+        else:
+            plan_title = f"نامشخص | {days_left_str}"
+    else:
+        # حالت تست رایگان یا بدون پلن
+        plan_title = f"تست ۱ روزه | ۱ کاربره | نامحدود | {days_left_str}"
+
+    # ----- کش payload کانفیگ‌ها (همگانی) -----
+    cached_payload = await get_kv("cached_configs_payload")
     if cached_payload is None:
         cfg_res = await query_db("SELECT config_text FROM configs WHERE is_active = 1")
         confs = get_rows(cfg_res)
 
         payload_lines = []
-
         if BANNER_CONFIG:
             payload_lines.append(BANNER_CONFIG.strip())
-
         payload_lines.extend([c["config_text"].strip() for c in confs if c["config_text"].strip()])
         combined = "\n".join(payload_lines)
         cached_payload = base64.b64encode(combined.encode("utf-8")).decode("utf-8")
         await put_kv("cached_configs_payload", cached_payload, expiration_ttl=300)
 
-    title = "🌐 @TechNowVPNBOT🛜"
-    title_b64 = base64.b64encode(title.encode('utf-8')).decode('utf-8')
-    safe_title = urllib.parse.quote(title)
+    # ---- تنظیم هدرها با تایتل پویا ----
+    title_b64 = base64.b64encode(plan_title.encode('utf-8')).decode('utf-8')
+    safe_title = urllib.parse.quote(plan_title)
 
     headers = {
         "Cache-Control": "no-cache, no-store, must-revalidate",
