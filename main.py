@@ -11,7 +11,8 @@
 3) نمایش نام قشنگ کانال در دکمه‌ها:
    - اگر در force_channels اسم دستی ندهی، از getChat عنوان کانال را می‌گیرد و در KV cache می‌کند.
    - فرمت دستی همچنان پشتیبانی می‌شود: @username|نام دلخواه
-4) تایتل پویای ساب‌لینک بر اساس پلن کاربر (مدت، تعداد کاربر، وضعیت، روزهای باقی‌مانده) در فِرگمنت URL – بدون encode برای نمایش خوانا
+4) تایتل پویای ساب‌لینک بر اساس پلن کاربر – بدون فاصله، با ایموجی، مختصر و خوانا
+5) کانفیگ دائمی در ابتدای خروجی ساب‌لینک (قابل مشاهده برای همه کاربران)
 """
 
 import os
@@ -44,8 +45,8 @@ CF_KV_ID = os.getenv("CF_KV_ID", "")
 # متغیر محیطی برای دامنه اصلی ربات
 APP_BASE_URL = os.getenv("APP_BASE_URL", "https://technowvpnbot.ariyacompany-io.workers.dev")
 
-# بنر آگهی در صدر سابلینک (کانفیگ نامعتبر نمایشی) ثابت شد
-BANNER_CONFIG = "vless://89210719-c3b9-4053-9c75-c0c3396fabd3@Update:7878?encryption=none&security=none&type=ws&path=%2F#%F0%9F%93%A2%D9%87%D8%B1%20%D8%B1%D9%88%D8%B2%20%D9%84%DB%8C%D9%86%DA%A9%20%D8%AE%D9%88%D8%AF%20%D8%B1%D8%A7%20%D8%A8%D8%B1%D9%88%D8%B2%D8%B1%D8%B3%D8%A7%D9%86%DB%8C%20%DA%A9%D9%86%DB%8C%D8%AF%F0%9F%93%A2"
+# 🔥 کانفیگ دائمی – همیشه در ابتدای خروجی ساب‌لینک قرار می‌گیرد و هرگز حذف نمی‌شود
+BANNER_CONFIG = "vless://1234@1.1.1.1:443?encryption=none&security=tls&sni=sertraline.adaspoloandco.com&fp=chrome&type=ws&host=sertraline.adaspoloandco.com&path=%2Fdownload.php#%F0%9F%8C%90%D9%87%D8%B1%20%D8%B1%D9%88%D8%B2%20%D9%84%DB%8C%D9%86%DA%A9%20%D8%AE%D9%88%D8%AF%20%D8%B1%D8%A7%20%D8%A2%D9%BE%D8%AF%DB%8C%D8%AA%20%DA%A9%D9%86%DB%8C%D8%AF%E2%9A%A1"
 
 CF_HEADERS = {
     "Authorization": f"Bearer {CF_API_TOKEN}",
@@ -634,12 +635,12 @@ async def check_channel_membership(telegram_id, force_refresh=False):
     return True
 
 # =====================================================================
-# 🔥 تغییر اصلی: تابع build_sub_url_async با تایتل پویا (بدون encode)
+# 🔥 تغییر اصلی: تابع build_sub_url_async با تایتل پویا (بدون encode، بدون فاصله)
 # =====================================================================
 async def build_sub_url_async(token: str) -> str:
     """
     لینک ساب‌لینک را با فِرگمنت اختصاصی بر اساس اطلاعات پلن و انقضا می‌سازد.
-    این بار متن فارسی را بدون encode در فِرگمنت قرار می‌دهیم تا در کلاینت‌ها خوانا باشد.
+    عنوان بدون فاصله و با ایموجی‌های مختصر طراحی شده است.
     نتیجه در کش محلی و KV ذخیره می‌شود تا فشار روی دیتابیس کاهش یابد.
     """
     cache_key = f"sub_url_{token}"
@@ -663,7 +664,6 @@ async def build_sub_url_async(token: str) -> str:
     )
     row = get_first_row(sub_res)
     if not row:
-        # در صورت نبود اشتراک، لینک بدون فِرگمنت برگردان
         base = APP_BASE_URL.rstrip('/')
         fallback = f"{base}/sub/{token}"
         set_local_cache(cache_key, fallback, 60)
@@ -677,21 +677,20 @@ async def build_sub_url_async(token: str) -> str:
 
     now = datetime.datetime.utcnow()
     days_left = (expires_at - now).days
-    days_left_str = f"{days_left} روز مانده" if days_left >= 0 else "منقضی شده"
+    days_left_str = f"{days_left}روز" if days_left >= 0 else "منقضی"
 
     plan_id = row.get("plan_id")
     if plan_id:
         duration = row.get("duration_days", 0)
         max_users = row.get("max_users", 1)
-        title = f"{duration} روزه | {max_users} کاربره | نامحدود | {days_left_str}"
+        # فرمت جدید: بدون فاصله، با ایموجی
+        title = f"📆{duration}روزه|👥{max_users}کاربره|♾️نامحدود|⏳{days_left_str}"
     else:
-        title = f"تست ۱ روزه | ۱ کاربره | نامحدود | {days_left_str}"
+        title = f"🎁تست۱روزه|👤۱کاربره|♾️نامحدود|⏳{days_left_str}"
 
-    # ساخت لینک نهایی بدون encode کردن فِرگمنت
     base = APP_BASE_URL.rstrip('/')
     full_url = f"{base}/sub/{token}#{title}"
 
-    # ذخیره در کش‌ها
     set_local_cache(cache_key, full_url, 300)
     await put_kv(cache_key, full_url, expiration_ttl=300)
 
@@ -1846,9 +1845,9 @@ async def handle_sublink(token: str):
         await execute_db("UPDATE subscriptions SET status = 'expired' WHERE id = ?", sub["id"])
         return Response(content="", media_type="text/plain")
 
-    # ساخت تایتل برای هدرها (همانند فِرگمنت)
+    # ساخت تایتل پویا بدون فاصله و با ایموجی
     days_left = (expires_at - now).days
-    days_left_str = f"{days_left} روز مانده" if days_left >= 0 else "منقضی شده"
+    days_left_str = f"{days_left}روز" if days_left >= 0 else "منقضی"
     plan_id = sub.get("plan_id")
     if plan_id:
         plan_res = await query_db("SELECT duration_days, max_users FROM plans WHERE id = ?", plan_id)
@@ -1856,11 +1855,11 @@ async def handle_sublink(token: str):
         if plan:
             duration = plan.get("duration_days", 0)
             max_users = plan.get("max_users", 1)
-            plan_title = f"{duration} روزه | {max_users} کاربره | نامحدود | {days_left_str}"
+            plan_title = f"📆{duration}روزه|👥{max_users}کاربره|♾️نامحدود|⏳{days_left_str}"
         else:
-            plan_title = f"نامشخص | {days_left_str}"
+            plan_title = f"نامشخص|⏳{days_left_str}"
     else:
-        plan_title = f"تست ۱ روزه | ۱ کاربره | نامحدود | {days_left_str}"
+        plan_title = f"🎁تست۱روزه|👤۱کاربره|♾️نامحدود|⏳{days_left_str}"
 
     # ----- کش payload کانفیگ‌ها (همگانی) -----
     cached_payload = await get_kv("cached_configs_payload")
