@@ -95,7 +95,7 @@ STRINGS = {
         "🔗 لینک اختصاصی شما برای دعوت:\n`{ref_link}`"
     ),
     "support_contact": "🎧 بخش ارتباط با پشتیبانی:",
-    "support_session_started": "💬 پیام خود را ارسال کنید.",
+    "support_session_started": "💬 پیام خود را ارسال کنید.\nبرای خروج روی دکمه شیشه‌ای زیر کلیک کنید.",
     "support_session_ended": "🔚 جلسه پشتیبانی پایان یافت.",
     "support_forwarded": "پیام از کاربر {user_id}:\n\n{text}",
     "admin_only": "⛔ این بخش فقط برای مدیران در دسترس است.",
@@ -440,7 +440,7 @@ async def background_expiration_notifier():
             
             for sub in subs:
                 try:
-                    expires_at = datetime.datetime.strptime(sub["expires_at"], "%Y-%m-%d \n %H:%M:%S")
+                    expires_at = datetime.datetime.strptime(sub["expires_at"], "%Y-%m-%d %H:%M:%S")
                 except Exception:
                     continue
 
@@ -460,7 +460,7 @@ async def background_expiration_notifier():
                 if time_left_sec <= 3600 and notified_level < 3:
                     msg = (f"⚠️ **هشدار خیلی مهم** ⚠️\n\nفقط **۱ ساعت** تا پایان اعتبار سرویس شما باقی مانده است!\n\n"
                            f"🔗 لینک سرویس: `{sub_url}`\n💰 موجودی کیف پول: {sub['balance']:,} تومان\n\n"
-                           f"جهت جلوگیری از قطعی سرویس، سریعاً از طریق دکمه زیر تمدید کنید.")
+                           f"جهت جلوگیری از قطعی اینترنت، سریعاً از طریق دکمه زیر تمدید کنید.")
                     new_level = 3
                 elif time_left_sec <= 86400 and notified_level < 2:
                     msg = (f"⏳ **یادآوری تمدید**\n\nسرویس شما **۲۴ ساعت** دیگر منقضی خواهد شد.\n\n"
@@ -571,7 +571,7 @@ async def check_channel_membership(telegram_id):
 
 async def build_sub_url_async(token):
     base = APP_BASE_URL.rstrip('/')
-    return f"{base}/sub/{token}"
+    return f"{base}/sub/{token}#🌐@TechNowVPNBOT🛜"
 
 # ---------------------------------------------------------------------
 # 📋 کیبوردهای اینلاین
@@ -779,7 +779,7 @@ async def forward_support_message(user, message, chat_id):
         
     await call_telegram("sendMessage", {
         "chat_id": chat_id,
-        "text": "✅ پیام شما ارسال شد. منتظر پاسخ باشید."
+        "text": "✅ پیام شما به پشتیبانی ارسال شد. منتظر پاسخ باشید."
     })
 
 async def create_subscription_from_plan(plan_id, user_id):
@@ -1046,7 +1046,7 @@ async def process_callback(callback):
         await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "✅ نشست پشتیبانی پایان یافت.", "show_alert": True})
         
         # ۲. تغییر متن پیام فعلی تا دکمه‌اش حذف شود
-        await edit_message(chat_id, message_id, "🔚 نشست پشتیبانی پایان یافت.", reply_markup=None)
+        await edit_message(chat_id, message_id, "🔚 نشست پشتیبانی پایان یافت.\n\n(این پیام به‌زودی پاک می‌شود)", reply_markup=None)
         
         # ۳. ارسال منوی اصلی فوراً به کاربر
         markup = await get_user_inline_keyboard(actual_is_admin)
@@ -1235,7 +1235,7 @@ async def process_callback(callback):
     if data.startswith("del_sub_req_"):
         token = data.replace("del_sub_req_", "")
         markup = {"inline_keyboard": [[{"text": "✅ بله، حذف کن", "callback_data": f"del_sub_yes_{token}"}, {"text": "❌ خیر", "callback_data": "my_services"}]]}
-        await edit_message(chat_id, message_id, "در صورت حذف این سرویس عودت وجه امکان پذیر نیست ❌\nآیا از حذف این سرویس اطمینان دارید؟", reply_markup=markup)
+        await edit_message(chat_id, message_id, "آیا از حذف این سرویس اطمینان دارید؟", reply_markup=markup)
         return
         
     if data.startswith("del_sub_yes_"):
@@ -1307,7 +1307,7 @@ async def process_callback(callback):
 
     if data == "adm_add_config":
         await execute_db("UPDATE users SET state = 'waiting_for_config' WHERE id = ?", user["id"])
-        await edit_message(chat_id, message_id, "📥 لطفا کانفیگ خود را ارسال کنید.\n", reply_markup={"inline_keyboard": [[{"text": "🔙 بازگشت به منوی اصلی", "callback_data": "admin_return"}]]})
+        await edit_message(chat_id, message_id, "📥 لطفا کانفیگ خود را ارسال کنید.\nبرای پایان، دکمه زیر را بزنید:", reply_markup={"inline_keyboard": [[{"text": "🔙 بازگشت به منوی اصلی", "callback_data": "admin_return"}]]})
         return
 
     if data == "adm_manage_configs":
@@ -1407,8 +1407,8 @@ async def process_callback(callback):
             "inline_keyboard": [
                 [{"text": "✏️ ویرایش کانال‌های اجباری", "callback_data": "adm_set_channels"},
                  {"text": "✏️ ویرایش پاداش دعوت", "callback_data": "adm_set_referral_reward"}],
-                [{"text": "✏️ تنظیم راهنما", "callback_data": "adm_set_help"}, 
-                 {"text": "✏️ تنظیم دکمه داینامیک", "callback_data": "adm_dyn_btn"}],
+                [{"text": "📖 تنظیم راهنما", "callback_data": "adm_set_help"}, 
+                 {"text": "🔘 تنظیم دکمه داینامیک", "callback_data": "adm_dyn_btn"}],
                 [{"text": "🔙 بازگشت به منوی اصلی", "callback_data": "admin_return"}]
             ]
         }
