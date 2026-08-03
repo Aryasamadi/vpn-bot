@@ -46,9 +46,6 @@ EXTERNAL_SUBLINKS = os.getenv("EXTERNAL_SUBLINKS", "").split(",")
 # فعال/غیرفعال کردن ویژگی (پیش‌فرض: فعال)
 EXTERNAL_ENABLED = os.getenv("EXTERNAL_ENABLED", "true").lower() == "true"
 
-# آستانه پینگ (میلی‌ثانیه) – کانفیگ‌های با پینگ کمتر از این مقدار سالم در نظر گرفته می‌شوند
-PING_THRESHOLD_MS = int(os.getenv("PING_THRESHOLD_MS", "150"))
-
 CF_HEADERS = {
     "Authorization": f"Bearer {CF_API_TOKEN}",
     "Content-Type": "application/json"
@@ -436,7 +433,7 @@ async def init_database_if_needed():
     defaults = {
         "referral_reward": "2000",
         "force_channels": "",
-        "external_sublinks": ",".join(EXTERNAL_SUBLINKS),  # ذخیره لیست در تنظیمات
+        "external_sublinks": ",".join(EXTERNAL_SUBLINKS),
     }
     for key, val in defaults.items():
         res = await query_db("SELECT value FROM settings WHERE key = ?", key)
@@ -477,9 +474,7 @@ async def fetch_and_filter_external_configs():
         try:
             resp = await http_client.get(sub_url, timeout=10.0)
             if resp.status_code == 200:
-                # ممکن است خروجی base64 یا plain text باشد
                 content = resp.text
-                # اگر base64 بود decode کن
                 try:
                     decoded = base64.b64decode(content).decode('utf-8')
                     lines = decoded.splitlines()
@@ -492,18 +487,15 @@ async def fetch_and_filter_external_configs():
         except Exception as e:
             print(f"Error fetching external sublink {sub_url}: {e}")
 
-    # فیلتر کردن کانفیگ‌های سالم
     healthy_configs = []
     for cfg in all_configs:
         if await check_config_health(cfg):
             healthy_configs.append(cfg)
-            # برای جلوگیری از بیش از حد سنگین شدن، حداکثر ۱۰ کانفیگ سالم را نگه می‌داریم
             if len(healthy_configs) >= 10:
                 break
 
-    # ذخیره در KV
     if healthy_configs:
-        await put_kv("external_configs", "\n".join(healthy_configs), expiration_ttl=900)  # ۱۵ دقیقه
+        await put_kv("external_configs", "\n".join(healthy_configs), expiration_ttl=900)
     else:
         await delete_kv("external_configs")
 
@@ -512,12 +504,55 @@ async def fetch_and_filter_external_configs():
 async def background_external_updater():
     """تسک پس‌زمینه برای به‌روزرسانی دوره‌ای کانفیگ‌های خارجی"""
     while True:
-        await asyncio.sleep(15 * 60)  # هر ۱۵ دقیقه
+        await asyncio.sleep(15 * 60)
         try:
             await fetch_and_filter_external_configs()
             print("[CAT] External configs updated.")
         except Exception as e:
             print(f"[CAT] External updater error: {e}")
+
+# =====================================================================
+# 🧪 توابع چک سلامت کانفیگ‌های داخلی (چکر خودکار)
+# =====================================================================
+async def background_config_checker():
+    """چک کردن دوره‌ای سلامت کانفیگ‌های داخلی (به جز بنر با id=0)"""
+    while True:
+        await asyncio.sleep(30 * 60)  # هر ۳۰ دقیقه
+        try:
+            res = await query_db("SELECT * FROM configs WHERE is_active = 1 AND id != 0")
+            configs = get_rows(res)
+            for cfg in configs:
+                is_healthy = False
+                try:
+                    ip = extract_ip_from_config(cfg["config_text"])
+                    port = extract_port_from_config(cfg["config_text"])
+                    if ip and port:
+                        reader, writer = await asyncio.wait_for(asyncio.open_connection(ip, port), timeout=4.0)
+                        writer.close()
+                        await writer.wait_closed()
+                        is_healthy = True
+                except:
+                    is_healthy = False
+
+                if not is_healthy:
+                    fail_count = cfg.get("fail_count", 0) + 1
+                    if fail_count >= 3:
+                        await execute_db("DELETE FROM configs WHERE id = ?", cfg["id"])
+                        await delete_kv("configs_payload")
+                        if ADMIN_IDS:
+                            admins = [x.strip() for x in str(ADMIN_IDS).split(",") if x.strip()]
+                            for admin_id in admins:
+                                await call_telegram("sendMessage", {
+                                    "chat_id": int(admin_id),
+                                    "text": f"⚠️ کانفیگ زیر به دلیل 3 بار عدم اتصال متوالی حذف گردید:\n\n`{cfg['config_text']}`",
+                                    "parse_mode": "Markdown"
+                                })
+                    else:
+                        await execute_db("UPDATE configs SET fail_count = ? WHERE id = ?", fail_count, cfg["id"])
+                else:
+                    await execute_db("UPDATE configs SET fail_count = 0 WHERE id = ?", cfg["id"])
+        except Exception as e:
+            print(f"[CAT] Config checker error: {e}")
 
 # ---------------------------------------------------------------------
 # 🧑‍💼 توابع کاربر و ادمین
