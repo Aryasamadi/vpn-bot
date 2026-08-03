@@ -157,7 +157,13 @@ def get_first_row(db_res):
 
 async def query_db(sql, *args):
     url = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/d1/database/{CF_D1_ID}/query"
-    payload = {"sql": sql, "params": list(args)}
+    
+    # Fix 1: Cloudflare D1 Database Array Payload Bug
+    payload_obj = {"sql": sql}
+    if args:
+        payload_obj["params"] = list(args)
+    payload = [payload_obj] # MUST BE A LIST!
+    
     try:
         res = await http_client.post(url, headers=CF_HEADERS, json=payload, timeout=10.0)
         data = res.json()
@@ -405,7 +411,7 @@ async def background_config_checker():
                     fail_count = cfg.get("fail_count", 0) + 1
                     if fail_count >= 3:
                         await execute_db("DELETE FROM configs WHERE id = ?", cfg["id"])
-                        await delete_kv("cached_configs_payload")
+                        await delete_kv("cached_raw_configs_v2")
                         if ADMIN_IDS:
                             admins = [x.strip() for x in str(ADMIN_IDS).split(",") if x.strip()]
                             for admin_id in admins:
@@ -1695,7 +1701,6 @@ async def handle_webhook(request: Request):
 
 @app.get("/sub/{token}")
 async def handle_sublink(token: str):
-    # Modified SQL query to JOIN with plans table
     sub_res = await query_db("""
         SELECT s.id, s.token, s.expires_at, s.status, p.duration_days, p.max_users 
         FROM subscriptions s 
@@ -1718,12 +1723,10 @@ async def handle_sublink(token: str):
         await execute_db("UPDATE subscriptions SET status = 'expired' WHERE id = ?", sub["id"])
         return Response(content="", media_type="text/plain")
 
-    # Time calculations
     time_left = expires_at - now
     days_left = time_left.days
     hours_left = time_left.seconds // 3600
     
-    # Internal Gregorian to Jalali converter function for short Farsi date
     def g2j(gy, gm, gd):
         g_d_m = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]
         jy = (gy - 1600) // 33 * 33 + 979
@@ -1749,15 +1752,13 @@ async def handle_sublink(token: str):
     def to_fa(text):
         return str(text).translate(str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹"))
 
-    # Convert values to Farsi formatting
     date_str_fa = to_fa(date_str)
     time_left_str = f"{days_left} روز و {hours_left} ساعت"
     time_left_fa = to_fa(time_left_str)
     max_users = sub.get("max_users") or 1
     max_users_fa = to_fa(str(max_users))
 
-    # Dynamic Profile Title Generation
-    title = f"{date_str_fa} | {time_left_fa} مانده | {max_users_fa} کاربره | نامحدود"
+    title = f"{date_str_fa} | {time_left_fa} مانده | {max_users_fa} کاربره"
     title_b64 = base64.b64encode(title.encode('utf-8')).decode('utf-8')
     safe_title = urllib.parse.quote(title)
 
@@ -1768,8 +1769,6 @@ async def handle_sublink(token: str):
         confs = get_rows(cfg_res)
         
         payload_lines = []
-        
-        # 1. اضافه کردن ثابت و همیشگی بنر به عنوان اولین کانفیگ
         if BANNER_CONFIG:
             payload_lines.append(BANNER_CONFIG.strip())
             
@@ -1778,16 +1777,22 @@ async def handle_sublink(token: str):
         cached_payload = base64.b64encode(combined.encode("utf-8")).decode("utf-8")
         await put_kv("cached_configs_payload", cached_payload, expiration_ttl=300)
 
-    # 4. Header Updates: Base64 encoding the dynamic title
+    # Fix 3: Appending User Info as a Dummy Config via Hashtag
+    decoded_payload = base64.b64decode(cached_payload).decode("utf-8")
+    dummy_config = f"vless://00000000-0000-0000-0000-000000000000@127.0.0.1:80?encryption=none&security=none&type=ws&path=%2F#{safe_title}"
+    final_payload = decoded_payload + "\n" + dummy_config
+    final_payload_b64 = base64.b64encode(final_payload.encode("utf-8")).decode("utf-8")
+
+    # Fix 2: Sublink Client Auto-Update Headers
     headers = {
         "Cache-Control": "no-cache, no-store, must-revalidate",
         "profile-title": f"base64:{title_b64}",
         "profile-update-interval": "12",
-        "Subscription-Userinfo": f"upload=0; download=0; total=53687091200; expire={int(expires_at.timestamp())}",
+        "Subscription-Userinfo": f"upload=0; download=0; total=10737418240; expire={int(expires_at.timestamp())}",
         "Content-Disposition": f"attachment; filename*=UTF-8''{safe_title}; filename=\"{safe_title}\""
     }
     
-    return Response(content=cached_payload, media_type="text/plain", headers=headers)
+    return Response(content=final_payload_b64, media_type="text/plain", headers=headers)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
