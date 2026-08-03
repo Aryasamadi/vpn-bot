@@ -5,11 +5,11 @@
 - اتصال به D1 و KV از طریق Cloudflare API
 - به‌روزرسانی: تنظیم تایتل اختصاصی ساب‌لینک، اصلاح دکمه پشتیبانی، تزریق کانفیگ نمایشی و سیستم یادآور انقضا
 
-اصلاحات نهایی (بهینه‌سازی حافظه):
-- کش ۵ دقیقه‌ای فقط برای کانفیگ‌های دیتابیس (بدون بنر)
-- بنر دائمی به‌صورت زنده به خروجی اضافه می‌شود
-- حذف کاراکتر | از تایتل ساب‌لینک (فرمت: ⏳14روز👥3کاربره♾️نامحدود📆15روزه)
-- کاهش کوئری‌های D1 به یک بار در هر ۵ دقیقه
+اصلاحات نهایی (رفع قطعی مشکل بنر):
+- بنر به‌عنوان کانفیگ دائمی با id=0 در دیتابیس ذخیره می‌شود
+- کش KV شامل بنر + کانفیگ‌های دیگر است
+- چکر خودکار بنر را حذف نمی‌کند
+- حذف کاراکتر | از تایتل (فرمت: ⏳14روز👥3کاربره♾️نامحدود📆15روزه)
 """
 
 import os
@@ -41,7 +41,7 @@ CF_KV_ID = os.getenv("CF_KV_ID", "")
 
 APP_BASE_URL = os.getenv("APP_BASE_URL", "https://technowvpnbot.ariyacompany-io.workers.dev")
 
-# 🔥 بنر دائمی – همیشه در ابتدای خروجی قرار می‌گیرد و هرگز حذف نمی‌شود
+# 🔥 بنر دائمی – این لینک به‌عنوان کانفیگ با id=0 در دیتابیس ذخیره می‌شود
 BANNER_CONFIG = "vless://1234@1.1.1.1:443?encryption=none&security=tls&sni=sertraline.adaspoloandco.com&fp=chrome&type=ws&host=sertraline.adaspoloandco.com&path=%2Fdownload.php#%F0%9F%8C%90%D9%87%D8%B1%20%D8%B1%D9%88%D8%B2%20%D9%84%DB%8C%D9%86%DA%A9%20%D8%AE%D9%88%D8%AF%20%D8%B1%D8%A7%20%D8%A2%D9%BE%D8%AF%DB%8C%D8%AA%20%DA%A9%D9%86%DB%8C%D8%AF%E2%9A%A1"
 
 CF_HEADERS = {
@@ -50,7 +50,7 @@ CF_HEADERS = {
 }
 
 # ---------------------------------------------------------------------
-# 🚀 Global HTTP Client & Local Cache (برای تنظیمات و عضویت)
+# 🚀 Global HTTP Client & Local Cache
 # ---------------------------------------------------------------------
 http_client = None
 _local_cache = {}
@@ -204,7 +204,7 @@ def get_back_markup(is_admin_user):
     return {"inline_keyboard": [[{"text": "🔙 بازگشت به منوی اصلی", "callback_data": "admin_return" if is_admin_user else "user_return"}]]}
 
 # ---------------------------------------------------------------------
-# ⚙️ مدیریت تنظیمات با کش KV کلادفلر (برای تنظیمات دیگر)
+# ⚙️ مدیریت تنظیمات با کش KV کلادفلر
 # ---------------------------------------------------------------------
 async def get_kv(key):
     url = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/storage/kv/namespaces/{CF_KV_ID}/values/{key}"
@@ -353,8 +353,16 @@ async def format_config_name(config_text):
     return config_text
 
 async def init_database_if_needed():
-    initialized = await get_kv("db_initialized_v2_3")
+    initialized = await get_kv("db_initialized_v2_4")  # نسخه جدید برای اضافه کردن بنر
     await execute_db("ALTER TABLE subscriptions ADD COLUMN notified_level INTEGER DEFAULT 0")
+
+    # 🔥 اضافه کردن بنر به‌عنوان کانفیگ دائمی با id=0 (اگر وجود نداشت)
+    banner_exists = await query_db("SELECT id FROM configs WHERE id = 0")
+    if not get_first_row(banner_exists):
+        await execute_db("INSERT INTO configs (id, config_text, is_active, fail_count) VALUES (0, ?, 1, 0)", BANNER_CONFIG)
+    else:
+        # اطمینان از اینکه بنر همیشه active باشد
+        await execute_db("UPDATE configs SET is_active = 1, config_text = ? WHERE id = 0", BANNER_CONFIG)
 
     if initialized == "true":
         return
@@ -418,14 +426,14 @@ async def init_database_if_needed():
         if not get_first_row(res):
             await execute_db("INSERT INTO settings (key, value) VALUES (?, ?)", key, val)
 
-    await put_kv("db_initialized_v2_3", "true")
+    await put_kv("db_initialized_v2_4", "true")
 
-# چکر خودکار کانفیگ‌ها (۳۰ دقیقه)
+# چکر خودکار کانفیگ‌ها (۳۰ دقیقه) – بنر با id=0 را حذف نمی‌کند
 async def background_config_checker():
     while True:
         await asyncio.sleep(30 * 60)
         try:
-            res = await query_db("SELECT * FROM configs WHERE is_active = 1")
+            res = await query_db("SELECT * FROM configs WHERE is_active = 1 AND id != 0")  # بنر را نادیده بگیر
             configs = get_rows(res)
             for cfg in configs:
                 is_healthy = False
@@ -454,7 +462,7 @@ async def background_config_checker():
                     if fail_count >= 3:
                         await execute_db("DELETE FROM configs WHERE id = ?", cfg["id"])
                         # حذف کش کانفیگ‌ها بعد از تغییر
-                        await delete_kv("configs_payload_no_banner")
+                        await delete_kv("configs_payload")
                         if ADMIN_IDS:
                             admins = [x.strip() for x in str(ADMIN_IDS).split(",") if x.strip()]
                             for admin_id in admins:
@@ -619,7 +627,7 @@ async def check_channel_membership(telegram_id, force_refresh=False):
     return True
 
 # =====================================================================
-# 🔥 تابع تولید لینک با تایتل بدون | (فرمت جدید)
+# 🔥 تابع تولید لینک با تایتل بدون |
 # =====================================================================
 async def build_sub_url_async(token: str) -> str:
     cache_key = f"sub_url_{token}"
@@ -919,7 +927,7 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
             formatted_cfg = await format_config_name(text)
             await execute_db("INSERT INTO configs (config_text) VALUES (?)", formatted_cfg)
             # حذف کش کانفیگ‌ها بعد از افزودن کانفیگ جدید
-            await delete_kv("configs_payload_no_banner")
+            await delete_kv("configs_payload")
             markup = {"inline_keyboard": [[{"text": "🔙 بازگشت به منوی اصلی", "callback_data": "admin_return"}]]}
             await call_telegram("sendMessage", {
                 "chat_id": chat_id,
@@ -1460,8 +1468,11 @@ async def process_callback(callback):
 
     if data.startswith("adm_cfg_del_yes_"):
         cfg_id = data.replace("adm_cfg_del_yes_", "")
+        if int(cfg_id) == 0:
+            await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "❌ بنر دائمی قابل حذف نیست!", "show_alert": True})
+            return
         await execute_db("DELETE FROM configs WHERE id = ?", cfg_id)
-        await delete_kv("configs_payload_no_banner")  # حذف کش بعد از حذف کانفیگ
+        await delete_kv("configs_payload")
         await call_telegram("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
         return
 
@@ -1790,7 +1801,7 @@ async def startup_event():
     await init_database_if_needed()
     asyncio.create_task(background_config_checker())
     asyncio.create_task(background_expiration_notifier())
-    print("🚀 Bot Server Started! (Optimized cache: 5-min KV for configs only)")
+    print("🚀 Bot Server Started! (Banner is now a permanent config in DB)")
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -1805,7 +1816,7 @@ async def handle_webhook(request: Request):
     return Response(content="OK", status_code=200)
 
 # =====================================================================
-# 🔥 سرویس ساب‌لینک با بهینه‌سازی نهایی
+# 🔥 سرویس ساب‌لینک – کش شامل بنر + کانفیگ‌ها
 # =====================================================================
 @app.get("/sub/{token}")
 async def handle_sublink(token: str):
@@ -1841,22 +1852,16 @@ async def handle_sublink(token: str):
     else:
         plan_title = f"⏳{days_left_str}👤۱کاربره♾️نامحدود🎁تست۱روزه"
 
-    # ---- کش ۵ دقیقه‌ای فقط برای کانفیگ‌های دیتابیس (بدون بنر) ----
-    cache_key = "configs_payload_no_banner"
+    # ---- کش ۵ دقیقه‌ای شامل بنر + کانفیگ‌ها (id=0 بنر است) ----
+    cache_key = "configs_payload"
     cached_payload = await get_kv(cache_key)
     if cached_payload is None:
-        cfg_res = await query_db("SELECT config_text FROM configs WHERE is_active = 1")
+        cfg_res = await query_db("SELECT config_text FROM configs WHERE is_active = 1 ORDER BY id ASC")
         confs = get_rows(cfg_res)
         payload_lines = [c["config_text"].strip() for c in confs if c["config_text"].strip()]
         combined = "\n".join(payload_lines)
         cached_payload = base64.b64encode(combined.encode('utf-8')).decode('utf-8')
         await put_kv(cache_key, cached_payload, expiration_ttl=300)  # ۵ دقیقه
-
-    # ---- ترکیب بنر (زنده) + کانفیگ‌های کش شده ----
-    banner_line = BANNER_CONFIG.strip()
-    decoded_configs = base64.b64decode(cached_payload).decode('utf-8')
-    final_combined = f"{banner_line}\n{decoded_configs}".strip()
-    final_payload = base64.b64encode(final_combined.encode('utf-8')).decode('utf-8')
 
     # ---- هدرها ----
     title_b64 = base64.b64encode(plan_title.encode('utf-8')).decode('utf-8')
@@ -1870,7 +1875,7 @@ async def handle_sublink(token: str):
         "Content-Disposition": f"attachment; filename*=UTF-8''{safe_title}; filename=\"{safe_title}\""
     }
 
-    return Response(content=final_payload, media_type="text/plain", headers=headers)
+    return Response(content=cached_payload, media_type="text/plain", headers=headers)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
