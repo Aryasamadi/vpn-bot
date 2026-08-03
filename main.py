@@ -11,7 +11,7 @@
 3) نمایش نام قشنگ کانال در دکمه‌ها:
    - اگر در force_channels اسم دستی ندهی، از getChat عنوان کانال را می‌گیرد و در KV cache می‌کند.
    - فرمت دستی همچنان پشتیبانی می‌شود: @username|نام دلخواه
-4) تایتل پویای ساب‌لینک بر اساس پلن کاربر (مدت، تعداد کاربر، وضعیت، روزهای باقی‌مانده) در فِرگمنت URL
+4) تایتل پویای ساب‌لینک بر اساس پلن کاربر (مدت، تعداد کاربر، وضعیت، روزهای باقی‌مانده) در فِرگمنت URL – بدون encode برای نمایش خوانا
 """
 
 import os
@@ -634,11 +634,12 @@ async def check_channel_membership(telegram_id, force_refresh=False):
     return True
 
 # =====================================================================
-# 🔥 تغییر اصلی: تابع build_sub_url_async با تایتل پویا
+# 🔥 تغییر اصلی: تابع build_sub_url_async با تایتل پویا (بدون encode)
 # =====================================================================
 async def build_sub_url_async(token: str) -> str:
     """
     لینک ساب‌لینک را با فِرگمنت اختصاصی بر اساس اطلاعات پلن و انقضا می‌سازد.
+    این بار متن فارسی را بدون encode در فِرگمنت قرار می‌دهیم تا در کلاینت‌ها خوانا باشد.
     نتیجه در کش محلی و KV ذخیره می‌شود تا فشار روی دیتابیس کاهش یابد.
     """
     cache_key = f"sub_url_{token}"
@@ -662,7 +663,7 @@ async def build_sub_url_async(token: str) -> str:
     )
     row = get_first_row(sub_res)
     if not row:
-        # در صورت نبود اشتراک، لینک بدون فِرگمنت برگردان (یا قدیمی)
+        # در صورت نبود اشتراک، لینک بدون فِرگمنت برگردان
         base = APP_BASE_URL.rstrip('/')
         fallback = f"{base}/sub/{token}"
         set_local_cache(cache_key, fallback, 60)
@@ -686,10 +687,9 @@ async def build_sub_url_async(token: str) -> str:
     else:
         title = f"تست ۱ روزه | ۱ کاربره | نامحدود | {days_left_str}"
 
-    # ساخت لینک نهایی
+    # ساخت لینک نهایی بدون encode کردن فِرگمنت
     base = APP_BASE_URL.rstrip('/')
-    encoded_title = urllib.parse.quote(title)
-    full_url = f"{base}/sub/{token}#{encoded_title}"
+    full_url = f"{base}/sub/{token}#{title}"
 
     # ذخیره در کش‌ها
     set_local_cache(cache_key, full_url, 300)
