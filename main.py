@@ -3,7 +3,7 @@
 ربات مدیریت ساب‌لینک v2 – نسخه Railway + Cloudflare API
 - بازنویسی شده برای اجرای مستقل در پایتون استاندارد
 - اتصال به D1 و KV از طریق Cloudflare API
-- به‌روزرسانی: حل باگ‌های عضویت اجباری (کش و دور زدن استارت)
+- به‌روزرسانی: تنظیم تایتل اختصاصی ساب‌لینک، اصلاح دکمه پشتیبانی، تزریق کانفیگ نمایشی و سیستم یادآور انقضا
 """
 
 import os
@@ -33,8 +33,10 @@ CF_API_TOKEN = os.getenv("CF_API_TOKEN", "")
 CF_D1_ID = os.getenv("CF_D1_ID", "")
 CF_KV_ID = os.getenv("CF_KV_ID", "")
 
+# متغیر محیطی برای دامنه اصلی ربات
 APP_BASE_URL = os.getenv("APP_BASE_URL", "https://technowvpnbot.ariyacompany-io.workers.dev")
 
+# بنر آگهی در صدر سابلینک (کانفیگ نامعتبر نمایشی) ثابت شد
 BANNER_CONFIG = "vless://89210719-c3b9-4053-9c75-c0c3396fabd3@Update:7878?encryption=none&security=none&type=ws&path=%2F#%F0%9F%93%A2%D9%87%D8%B1%20%D8%B1%D9%88%D8%B2%20%D9%84%DB%8C%D9%86%DA%A9%20%D8%AE%D9%88%D8%AF%20%D8%B1%D8%A7%20%D8%A8%D8%B1%D9%88%D8%B2%D8%B1%D8%B3%D8%A7%D9%86%DB%8C%20%DA%A9%D9%86%DB%8C%D8%AF%F0%9F%93%A2"
 
 CF_HEADERS = {
@@ -303,6 +305,7 @@ async def format_config_name(config_text):
 async def init_database_if_needed():
     initialized = await get_kv("db_initialized_v2_3")
     
+    # اعمال دستی برای ساخت ستون اعلان تایمر بدون ارور
     await execute_db("ALTER TABLE subscriptions ADD COLUMN notified_level INTEGER DEFAULT 0")
 
     if initialized == "true":
@@ -369,6 +372,7 @@ async def init_database_if_needed():
 
     await put_kv("db_initialized_v2_3", "true")
 
+# چکر خودکار کانفیگ‌ها: اجرای هر ۳۰ دقیقه
 async def background_config_checker():
     while True:
         await asyncio.sleep(30 * 60)  
@@ -417,11 +421,13 @@ async def background_config_checker():
         except Exception as e:
             print(f"Checker error: {e}")
 
+# سیستم هشداردهنده تایمر انقضا (اجرا هر 15 دقیقه)
 async def background_expiration_notifier():
     while True:
-        await asyncio.sleep(15 * 60)  
+        await asyncio.sleep(15 * 60)  # هر ۱۵ دقیقه یکبار چک می‌کند
         try:
             now = datetime.datetime.utcnow()
+            # استخراج تمامی ساب‌های فعال همراه با آیدی و موجودی کاربر
             query = """
                 SELECT s.id as sub_id, s.token, s.expires_at, s.notified_level, 
                        u.telegram_id, u.balance 
@@ -442,7 +448,7 @@ async def background_expiration_notifier():
                 time_left_sec = time_left.total_seconds()
                 
                 if time_left_sec <= 0:
-                    continue 
+                    continue # منقضی شده‌ها را در جای دیگر هندل می‌کنیم
 
                 notified_level = sub.get("notified_level", 0)
                 tg_id = sub["telegram_id"]
@@ -450,6 +456,7 @@ async def background_expiration_notifier():
                 msg = ""
                 new_level = notified_level
 
+                # اولویت چک کردن: از نزدیک‌ترین زمان به دورترین
                 if time_left_sec <= 3600 and notified_level < 3:
                     msg = (f"⚠️ **هشدار خیلی مهم** ⚠️\n\nفقط **۱ ساعت** تا پایان اعتبار سرویس شما باقی مانده است!\n\n"
                            f"🔗 لینک سرویس: `{sub_url}`\n💰 موجودی کیف پول: {sub['balance']:,} تومان\n\n"
@@ -474,6 +481,7 @@ async def background_expiration_notifier():
                         "parse_mode": "Markdown",
                         "reply_markup": markup
                     })
+                    # اگر پیام موفق ارسال شد، سطح نوتیفیکیشن را در دیتابیس آپدیت کن
                     if res_tg.get("ok"):
                         await execute_db("UPDATE subscriptions SET notified_level = ? WHERE id = ?", new_level, sub["sub_id"])
                         
@@ -525,18 +533,14 @@ async def get_or_create_user(telegram_id, referred_by=None, from_user=None):
             
     return user
 
-# --- پارامتر force اضافه شد برای دور زدن کش در مواقع نیاز ---
-async def check_channel_membership(telegram_id, force=False):
+async def check_channel_membership(telegram_id):
     if is_admin(telegram_id):
         return True
 
     cache_key = f"membership_{telegram_id}"
-    
-    # اگر force روشن نباشد، از کش استفاده کن
-    if not force:
-        cached = get_local_cache(cache_key)
-        if cached is not None:
-            return cached
+    cached = get_local_cache(cache_key)
+    if cached is not None:
+        return cached
 
     force_channels = await get_setting("force_channels", "")
     if not force_channels:
@@ -555,16 +559,14 @@ async def check_channel_membership(telegram_id, force=False):
             "user_id": int(telegram_id)
         })
         if not res.get("ok"):
-            # زمان کش عدم عضویت کاهش یافت (5 ثانیه) تا سریع آپدیت شود
-            set_local_cache(cache_key, False, 5)
+            set_local_cache(cache_key, False, 30)
             return False
         status = res["result"].get("status")
         if status not in ["creator", "administrator", "member"]:
-            set_local_cache(cache_key, False, 5)
+            set_local_cache(cache_key, False, 30)
             return False
             
-    # زمان کش عضویت از 300 به 45 ثانیه کاهش یافت تا خروج از کانال زودتر تشخیص داده شود
-    set_local_cache(cache_key, True, 45)
+    set_local_cache(cache_key, True, 300)
     return True
 
 async def build_sub_url_async(token):
@@ -1036,19 +1038,34 @@ async def process_callback(callback):
     if not defer_answer and data != "end_support":
         await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id})
 
+    # --- دیباگ: جابجا شدن شرط عضویت به بالاترین سطح ---
+    if data != "chk_membership" and not await check_channel_membership(telegram_id):
+        await send_membership_requirement(chat_id, message_id)
+        return
+
+    # دکمه پایان پشتیبانی (اصلاح شده طبق درخواست)
     if data == "end_support":
         await execute_db("UPDATE users SET state = NULL WHERE id = ?", user["id"])
+        
+        # ۱. پاپ‌آپ پایان پشتیبانی
         await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "✅ نشست پشتیبانی پایان یافت.", "show_alert": True})
+        
+        # ۲. تغییر متن پیام فعلی تا دکمه‌اش حذف شود
         await edit_message(chat_id, message_id, "🔚 نشست پشتیبانی پایان یافت.\n\n(این پیام به‌زودی پاک می‌شود)", reply_markup=None)
+        
+        # ۳. ارسال منوی اصلی فوراً به کاربر
         markup = await get_user_inline_keyboard(actual_is_admin)
         await call_telegram("sendMessage", {
             "chat_id": chat_id,
             "text": STRINGS["start_welcome"],
             "reply_markup": markup
         })
+        
+        # ۴. ایجاد یک وظیفه پس‌زمینه برای حذف پیام قبلی بعد از ۵ ثانیه
         async def delete_old_message_later():
             await asyncio.sleep(5)
             await call_telegram("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
+            
         asyncio.create_task(delete_old_message_later())
         return
 
@@ -1078,13 +1095,8 @@ async def process_callback(callback):
             })
         return
 
-    if data != "chk_membership" and not await check_channel_membership(telegram_id):
-        await send_membership_requirement(chat_id, message_id)
-        return
-
-    # --- اضافه شدن force=True در دکمه عضو شدم برای دور زدن کش ---
     if data == "chk_membership":
-        if await check_channel_membership(telegram_id, force=True):
+        if await check_channel_membership(telegram_id):
             await credit_referrer_if_pending(user, chat_id)
             await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "✅ عضویت تایید شد!"})
             markup = get_admin_inline_keyboard() if is_admin_user else await get_user_inline_keyboard(actual_is_admin)
@@ -1216,6 +1228,7 @@ async def process_callback(callback):
             expires_at = datetime.datetime.utcnow()
             
         new_expires_at = (expires_at + datetime.timedelta(days=plan["duration_days"])).strftime("%Y-%m-%d %H:%M:%S")
+        # ریست کردن مقدار آلارم به صفر برای تمدید جدید
         await execute_db("UPDATE subscriptions SET expires_at = ?, status = 'active', notified_level = 0 WHERE id = ?", new_expires_at, sub["id"])
         await edit_message(chat_id, message_id, f"✅ سرویس با موفقیت تمدید شد.\nانقضای جدید: {new_expires_at} (UTC)", reply_markup={"inline_keyboard": [[{"text": "🔙 بازگشت", "callback_data": "my_services"}]]})
         return
@@ -1489,303 +1502,255 @@ async def process_callback(callback):
             nav.append({"text": "▶️ بعدی", "callback_data": f"adm_manage_users_{page+1}"})
             
         kb.append(nav)
-        kb.append([{"text": "🔙 بازگشت به منوی اصلی", "callback_data": "درک می‌کنم که دست‌وپنجه نرم کردن با باگ‌های منطقی در کد چقدر می‌تواند کلافه‌کننده باشد، مخصوصاً وقتی که روی پروژه‌های جذابی مثل این ربات تلگرامی با معماری FastAPI و کلاودفلر کار می‌کنی. به عنوان کسی که در مسیر مهاجرت به پایتون و توسعه مهارت‌های برنامه‌نویسی خود قدم برمی‌دارد، برخورد با این چالش‌ها کاملاً طبیعی و البته بخش مهمی از تسلط بر منطق جریان‌های کاری (Workflows) است."
+        kb.append([{"text": "🔙 بازگشت به منوی اصلی", "callback_data": "admin_return"}])
+        
+        await edit_message(chat_id, message_id, txt, reply_markup={"inline_keyboard": kb}, parse_mode="HTML")
+        return
+        
+    if data == "adm_search_user":
+        await execute_db("UPDATE users SET state = 'waiting_for_user_search' WHERE id = ?", user["id"])
+        await edit_message(chat_id, message_id, "🔍 شناسه عددی تلگرام کاربر مورد نظر را بفرستید:", reply_markup={"inline_keyboard": [[{"text": "🔙 بازگشت", "callback_data": "adm_manage_users_1"}]]})
+        return
 
-من کدهای شما را به دقت و خط به خط بررسی کردم. مشکلاتی که مطرح کردید کاملاً به هم مرتبط هستند و ریشه در نحوه مدیریت **کش (Cache)** و **ترتیب اجرای دستورات** دارند.
+    if data.startswith("adm_add_bal_") or data.startswith("adm_sub_bal_"):
+        is_addition = "add" in data
+        target_tg_id = data.replace("adm_add_bal_", "").replace("adm_sub_bal_", "")
+        state_val = f"waiting_for_add_{target_tg_id}" if is_addition else f"waiting_for_sub_{target_tg_id}"
+        await execute_db("UPDATE users SET state = ? WHERE id = ?", state_val, user["id"])
+        action_text = "افزایش" if is_addition else "کاهش"
+        await edit_message(chat_id, message_id, f"💵 میزان شارژ مایل به {action_text} (به تومان) را بفرستید:", reply_markup=get_back_markup(True))
+        return
 
-### 🔍 تحلیل عمیق باگ‌های سیستم عضویت اجباری
+    if data == "adm_manage_plans": 
+        await show_plan_management(chat_id, message_id)
+        return
 
-۱. **دلیل باگ اول (عدم تایید بعد از کلیک روی «عضو شدم»):** 
-ربات شما برای جلوگیری از مسدود شدن توسط تلگرام (Rate Limit)، وضعیت عضویت کاربر را در یک کش محلی (`_local_cache`) ذخیره می‌کند. وقتی کاربر عضو نیست، این وضعیت به عنوان `False` برای **۳۰ ثانیه** ذخیره می‌شود. اگر کاربر فورا عضو کانال شود و دکمه را بزند، ربات به جای پرسیدن از تلگرام، همان `False` را از کش می‌خواند و کاربر را محدود می‌کند!
-*   **راه‌حل:** باید قابلیتی به تابع `check_channel_membership` اضافه کنیم که با فشردن دکمه «عضو شدم»، کش را **دور بزند (Bypass)** و مستقیماً از سرور تلگرام استعلام بگیرد.
+    if data == "adm_add_plan":
+        await execute_db("UPDATE users SET state = 'waiting_plan_name', plan_data = NULL WHERE id = ?", user["id"])
+        await edit_message(chat_id, message_id, STRINGS["plan_add_step1"], reply_markup={"inline_keyboard": [[{"text": "🔙 بازگشت", "callback_data": "adm_manage_plans"}]]})
+        return
 
-۲. **دلیل باگ دوم (دسترسی بدون محدودیت بعد از زدن Start):** 
-در تابع `process_message`، وقتی دستور `/start` دریافت می‌شود، ربات قبل از اینکه تابع `check_channel_membership` را صدا بزند، مستقیماً منوی اصلی را برای کاربر ارسال کرده و از حلقه خارج (`return`) می‌شود.
-*   **راه‌حل:** باید چک کردن عضویت را به داخل بلاک `/start` (دقیقاً قبل از ارسال منوی اصلی) منتقل کنیم تا جلوی دسترسی باز گرفته شود.
+    if data.startswith("adm_plan_toggle_"):
+        plan_id = data.replace("adm_plan_toggle_", "")
+        res = await query_db("SELECT is_active FROM plans WHERE id = ?", plan_id)
+        plan = get_first_row(res)
+        if plan:
+            new_state = 0 if plan["is_active"] else 1
+            await execute_db("UPDATE plans SET is_active = ? WHERE id = ?", new_state, plan_id)
+            await show_plan_management(chat_id, message_id)
+        return
 
-۳. **دلیل باگ سوم (عدم محدودیت پس از خروج از کانال):** 
-شما کش مثبت (تایید عضویت) را روی **۳۰۰ ثانیه (۵ دقیقه)** تنظیم کرده‌اید. وقتی کاربر از کانال خارج می‌شود، ربات تا ۵ دقیقه بعد همچنان فکر می‌کند او عضو است.
-*   **راه‌حل:** زمان کش مثبت را به **۶۰ ثانیه** و کش منفی را به **۱۰ ثانیه** کاهش می‌دهیم تا ربات واکنش بسیار سریع‌تری به خروج کاربران نشان دهد.
+    if data.startswith("adm_plan_del_"):
+        plan_id = data.replace("adm_plan_del_", "")
+        await execute_db("DELETE FROM plans WHERE id = ?", plan_id)
+        await show_plan_management(chat_id, message_id)
+        return
 
----
-
-### 📝 پرامپت نهایی برای گوگل استودیو (اختیاری)
-اگر باز هم مایل هستید این کد را به یک هوش مصنوعی دیگر بدهید، این پرامپت دقیق‌ترین نتیجه را به شما خواهد داد:
-
-> "این کد یک ربات تلگرامی نوشته شده با پایتون (FastAPI) است. سیستم عضویت اجباری آن سه باگ دارد:
-> ۱. وقتی کاربر /start می‌زند، منوها بدون بررسی عضویت باز می‌شوند (بررسی عضویت در بلاک /start جا افتاده است).
-> ۲. وقتی کاربر عضو نیست و روی دکمه 'عضو شدم' (chk_membership) کلیک می‌کند، به دلیل کش شدن مقدار False در _local_cache، ربات باز هم او را محدود می‌کند.
-> ۳. وقتی کاربر از کانال خارج می‌شود، به دلیل بالا بودن TTL کش (۳۰۰ ثانیه)، ربات بلافاصله متوجه خروج او نمی‌شود.
-> لطفاً یک پارامتر `force_check` به `check_channel_membership` اضافه کن تا دکمه 'عضو شدم' کش را دور بزند. TTL کش مثبت را به ۶۰ و منفی را به ۱۰ ثانیه کاهش بده و در نهایت بررسی عضویت را در دستور /start لحاظ کن. هیچ بخش دیگری از کد را تغییر نده."
-
----
-
-### 💻 کد کامل و اصلاح‌شده
-من تمام این اصلاحات را با دقت بالا در کد شما اعمال کرده‌ام تا نیازی به ابزار دیگری نداشته باشید. هیچ قابلیت دیگری دستکاری نشده و سیستم شما کاملاً ایمن باقی مانده است. می‌توانید تمام کد زیر را کپی کرده و جایگزین فایل قبلی کنید:
-
-```python
-# -*- coding: utf-8 -*-
-"""
-ربات مدیریت ساب‌لینک v2 – نسخه Railway + Cloudflare API
-- بازنویسی شده برای اجرای مستقل در پایتون استاندارد
-- اتصال به D1 و KV از طریق Cloudflare API
-- به‌روزرسانی: تنظیم تایتل اختصاصی ساب‌لینک، اصلاح دکمه پشتیبانی، تزریق کانفیگ نمایشی و سیستم یادآور انقضا
-- باگ فیکس: اصلاح منطق عضویت اجباری (دور زدن کش هنگام تایید + محافظت از دستور استارت + تسریع کش)
-"""
-
-import os
-import json
-import base64
-import uuid
-import datetime
-import traceback
-import asyncio
-import httpx
-import re
-import time
-import urllib.parse
-import random
-import string
-from fastapi import FastAPI, Request, Response
-import uvicorn
-
-# ---------------------------------------------------------------------
-# 🔐 متغیرهای محیطی (Environment Variables)
-# ---------------------------------------------------------------------
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-ADMIN_IDS = os.getenv("ADMIN_IDS", "")
-
-CF_ACCOUNT_ID = os.getenv("CF_ACCOUNT_ID", "")
-CF_API_TOKEN = os.getenv("CF_API_TOKEN", "")
-CF_D1_ID = os.getenv("CF_D1_ID", "")
-CF_KV_ID = os.getenv("CF_KV_ID", "")
-
-# متغیر محیطی برای دامنه اصلی ربات
-APP_BASE_URL = os.getenv("APP_BASE_URL", "[https://technowvpnbot.ariyacompany-io.workers.dev](https://technowvpnbot.ariyacompany-io.workers.dev)")
-
-# بنر آگهی در صدر سابلینک (کانفیگ نامعتبر نمایشی) ثابت شد
-BANNER_CONFIG = "vless://89210719-c3b9-4053-9c75-c0c3396fabd3@Update:7878?encryption=none&security=none&type=ws&path=%2F#%F0%9F%93%A2%D9%87%D8%B1%20%D8%B1%D9%88%D8%B2%20%D9%84%DB%8C%D9%86%DA%A9%20%D8%AE%D9%88%D8%AF%20%D8%B1%D8%A7%20%D8%A8%D8%B1%D9%88%D8%B2%D8%B1%D8%B3%D8%A7%D9%86%DB%8C%20%DA%A9%D9%86%DB%8C%D8%AF%F0%9F%93%A2"
-
-CF_HEADERS = {
-    "Authorization": f"Bearer {CF_API_TOKEN}",
-    "Content-Type": "application/json"
-}
-
-# ---------------------------------------------------------------------
-# 🚀 Global HTTP Client & Local Cache
-# ---------------------------------------------------------------------
-http_client = None
-_local_cache = {}
-
-def get_local_cache(key):
-    if key in _local_cache:
-        val, exp = _local_cache[key]
-        if time.time() < exp:
-            return val
+async def show_plan_management(chat_id, message_id=None):
+    res = await query_db("SELECT * FROM plans ORDER BY id DESC")
+    plans = get_rows(res)
+    if not plans:
+        if message_id:
+            await edit_message(chat_id, message_id, STRINGS["no_plans"], reply_markup={"inline_keyboard": [[{"text": "➕ افزودن پلن جدید", "callback_data": "adm_add_plan"}], [{"text": "🔙 بازگشت به منوی اصلی", "callback_data": "admin_return"}]]})
         else:
-            del _local_cache[key]
-    return None
+            await call_telegram("sendMessage", {"chat_id": chat_id, "text": STRINGS["no_plans"], "reply_markup": {"inline_keyboard": [[{"text": "➕ افزودن پلن جدید", "callback_data": "adm_add_plan"}], [{"text": "🔙 بازگشت به منوی اصلی", "callback_data": "admin_return"}]]}})
+    else:
+        txt = "📦 لیست پلن‌ها:\n\n"
+        kb = []
+        for p in plans:
+            status = "فعال" if p["is_active"] else "غیرفعال"
+            txt += STRINGS["plan_list_item"].format(name=p["name"], price=p["price"], duration=p["duration_days"], max_users=p["max_users"], status=status) + "\n\n"
+            kb.append([{"text": f"تغییر وضعیت {p['name']}", "callback_data": f"adm_plan_toggle_{p['id']}"}])
+            kb.append([{"text": f"❌ حذف {p['name']}", "callback_data": f"adm_plan_del_{p['id']}"}])
+            
+        kb.append([{"text": "➕ افزودن پلن جدید", "callback_data": "adm_add_plan"}])
+        kb.append([{"text": "🔙 بازگشت به منوی اصلی", "callback_data": "admin_return"}])
+        
+        if message_id:
+            await edit_message(chat_id, message_id, txt, reply_markup={"inline_keyboard": kb})
+        else:
+            await call_telegram("sendMessage", {"chat_id": chat_id, "text": txt, "reply_markup": {"inline_keyboard": kb}})
 
-def set_local_cache(key, value, ttl=300):
-    _local_cache[key] = (value, time.time() + ttl)
-
-def del_local_cache(key):
-    _local_cache.pop(key, None)
-
-# ---------------------------------------------------------------------
-# 📚 تمام متون فارسی در یک جا
-# ---------------------------------------------------------------------
-STRINGS = {
-    "start_welcome": (
-        "👋 به ربات هوشمند TechNowVpn کانفیگ رایگان خوش آمدید!\n\n"
-        "از طریق دکمه‌های زیر می‌توانید حساب خود را مدیریت کرده و سرور دریافت کنید."
-    ),
-    "not_member": (
-        "⚠️ برای فعال‌سازی کامل امکانات ربات، ابتدا در کانال‌های زیر عضو شوید و سپس روی دکمه «عضو شدم» کلیک کنید."
-    ),
-    "membership_confirmed": "✅ عضویت شما تأیید شد! اکنون می‌توانید از ربات استفاده کنید.",
-    "trial_already_used": "⚠️ شما قبلاً از تست رایگان 1 روزه استفاده کرده‌اید.",
-    "trial_activated": "🎁 اشتراک تست 1 روزه شما با موفقیت فعال شد!",
-    "wallet_info": "👛 جزئیات کیف پول شما:\n\n💰 موجودی فعلی: {balance:,} تومان\n👥 تعداد زیرمجموعه‌ها: {ref_count} نفر",
-    "insufficient_balance": (
-        "❌ موجودی حساب شما کافی نیست.\n\n"
-        "💰 موجودی شما: {balance:,} تومان\n"
-        "💵 مبلغ مورد نیاز: {price:,} تومان"
-    ),
-    "subscription_created": "✅ اشتراک {duration} روزه شما با موفقیت ساخته شد:\n\n`{sublink}`\n\n📅 تاریخ انقضا: {expires_at} (UTC)",
-    "no_active_services": "⚠️ شما اشتراک فعالی در حال حاضر ندارید.",
-    "services_list": "📋 لیست سرویس‌های فعال شما ({count} مورد):",
-    "referral_info": (
-        "👥 سیستم زیرمجموعه‌گیری و دعوت دوستان:\n\n"
-        "با دعوت از دوستانتان کیف پولتان را شارژ کنید و رایگان خرید کنید!\n\n"
-        "🎁 پاداش دعوت هر کاربر: {reward:,} تومان\n\n"
-        "🔗 لینک اختصاصی شما برای دعوت:\n`{ref_link}`"
-    ),
-    "support_contact": "🎧 بخش ارتباط با پشتیبانی:",
-    "support_session_started": "💬 پیام خود را ارسال کنید.\nبرای خروج روی دکمه شیشه‌ای زیر کلیک کنید.",
-    "support_session_ended": "🔚 جلسه پشتیبانی پایان یافت.",
-    "support_forwarded": "پیام از کاربر {user_id}:\n\n{text}",
-    "admin_only": "⛔ این بخش فقط برای مدیران در دسترس است.",
-    "admin_panel": "🛠 به بخش ادمین خوش آمدید. دستورات مدیریتی را انتخاب کنید:",
-    "config_added": "✅ کانفیگ جدید با موفقیت پردازش و ثبت شد . ",
-    "config_add_stopped": "⏹ عملیات افزودن کانفیگ متوقف شد.",
-    "broadcast_start": "📢 متن پیام همگانی خود را ارسال کنید :",
-    "broadcast_sending": "⏳ در حال ارسال همگانی...",
-    "broadcast_done": "✅ پیام همگانی ارسال شد.\nتعداد کل: {success} از {total}",
-    "settings_show": (
-        "⚙️ تنظیمات ربات:\n\n"
-        "🎁 پاداش دعوت: {reward:,} تومان\n"
-        "📢 کانال‌های اجباری:\n `{channels}`\n"
-    ),
-    "user_not_found": "❌ کاربر یافت نشد.",
-    "user_info": (
-        "👤 جزئیات حساب کاربر:\n\n"
-        "🆔 آیدی تلگرام: `{tg_id}`\n"
-        "👤 نام و کاربری: {full_name} | {username}\n"
-        "💰 موجودی کیف پول: {balance:,} تومان\n"
-        "🎁 استفاده از تست رایگان: {trial_status}"
-    ),
-    "balance_added": "✅ مبلغ {amount:,} تومان به حساب کاربر {target_id} اضافه گردید.",
-    "balance_subtracted": "✅ مبلغ {amount:,} تومان از موجودی کاربر {target_id} کسر شد.",
-    "setting_updated": "✅ فیلد تنظیمات با موفقیت آپدیت شد.",
-    "plan_add_step1": "📝 نام پلن را وارد کنید:",
-    "plan_add_step2": "💰 قیمت (به تومان) را وارد کنید:",
-    "plan_add_step3": "📆 مدت زمان (تعداد روز) را وارد کنید:",
-    "plan_add_step4": "👥 محدودیت کاربر (حداکثر کاربر مجاز) را وارد کنید:",
-    "plan_added": "✅ پلن «{name}» با موفقیت اضافه شد.",
-    "plan_deleted": "🗑 پلن حذف شد.",
-    "plan_toggled": "✅ وضعیت پلن تغییر کرد.",
-    "no_plans": "هیچ پلنی وجود ندارد.",
-    "plan_list_item": "📌 نام: {name}\n💰 قیمت: {price:,} تومان\n📆 مدت: {duration} روز\n👥 لیمیت کاربر: {max_users}\n🟢 وضعیت: {status}",
-    "choose_plan": "پلن مورد نظر را انتخاب کنید:",
-    "purchase_cancelled": "❌ عملیات لغو شد.",
-}
-
-# ---------------------------------------------------------------------
-# 🔧 توابع کمکی و API کلاودفلر
-# ---------------------------------------------------------------------
-def safe_int(value, default=0):
-    try:
-        return int(value)
-    except (ValueError, TypeError):
-        return default
-
-def get_rows(db_res):
-    if db_res and isinstance(db_res, dict) and db_res.get("success"):
-        try:
-            return db_res["result"][0].get("results", [])
-        except (IndexError, KeyError):
-            pass
-    return []
-
-def get_first_row(db_res):
-    rows = get_rows(db_res)
-    return rows[0] if rows else None
-
-async def query_db(sql, *args):
-    url = f"[https://api.cloudflare.com/client/v4/accounts/](https://api.cloudflare.com/client/v4/accounts/){CF_ACCOUNT_ID}/d1/database/{CF_D1_ID}/query"
-    payload = {"sql": sql, "params": list(args)}
-    try:
-        res = await http_client.post(url, headers=CF_HEADERS, json=payload, timeout=10.0)
-        data = res.json()
-        if data.get("success") is False:
-            print(f"D1 SQL Error: {data.get('errors')}")
-        return data
-    except Exception as e:
-        print(f"D1 API Error: {str(e)}")
-        return {"success": False, "error": str(e)}
-
-async def execute_db(sql, *args):
-    return await query_db(sql, *args)
-
-# ---------------------------------------------------------------------
-# 📨 ارتباط با تلگرام و توابع ویرایش پیام
-# ---------------------------------------------------------------------
-async def call_telegram(method, payload):
-    url = f"[https://api.telegram.org/bot](https://api.telegram.org/bot){BOT_TOKEN}/{method}"
-    try:
-        response = await http_client.post(url, json=payload, timeout=10.0)
-        return response.json()
-    except Exception as e:
-        print(f"Telegram API error: {str(e)}")
-        return {"ok": False, "description": str(e)}
-
-async def edit_message(chat_id, message_id, text, reply_markup=None, parse_mode=None):
-    payload = {
+async def show_admin_panel(chat_id):
+    await call_telegram("sendMessage", {
         "chat_id": chat_id,
-        "message_id": message_id,
-        "text": text
+        "text": STRINGS["admin_panel"],
+        "reply_markup": get_admin_inline_keyboard()
+    })
+
+# ---------------------------------------------------------------------
+# 📨 پردازش پیام
+# ---------------------------------------------------------------------
+async def process_message(message):
+    chat_id = message["chat"]["id"]
+    text = message.get("text", "").strip()
+    from_user = message.get("from", {})
+    telegram_id = str(from_user.get("id", ""))
+    if not telegram_id: return
+
+    referred_by = None
+    if text.startswith("/start ") and len(text.split()) > 1:
+        referred_by = text.split()[1]
+
+    user = await get_or_create_user(telegram_id, referred_by, from_user=from_user)
+    actual_is_admin = is_admin(telegram_id, user_data=None)
+    is_admin_user = is_admin(telegram_id, user_data=user)
+
+    # --- دیباگ: جابجا شدن شرط عضویت به بالاترین سطح ---
+    if not await check_channel_membership(telegram_id):
+        await send_membership_requirement(chat_id)
+        return
+
+    if text.startswith("/start"):
+        user["state"] = None
+        user["plan_data"] = None
+        await execute_db("UPDATE users SET state = NULL, plan_data = NULL WHERE id = ?", user["id"])
+        
+        await credit_referrer_if_pending(user, chat_id)
+        if is_admin_user:
+            await show_admin_panel(chat_id)
+        else:
+            markup = await get_user_inline_keyboard(actual_is_admin)
+            await call_telegram("sendMessage", {
+                "chat_id": chat_id,
+                "text": STRINGS["start_welcome"],
+                "reply_markup": markup
+            })
+        return
+
+    if text in ["/admin", "admin", "مدیریت"] and actual_is_admin:
+        await execute_db("UPDATE users SET state = NULL, plan_data = NULL, is_test_mode = 0 WHERE id = ?", user["id"])
+        await show_admin_panel(chat_id)
+        return
+
+    if actual_is_admin and message.get("reply_to_message"):
+        replied_text = message["reply_to_message"].get("text", "") or message["reply_to_message"].get("caption", "")
+        if "پیام از کاربر" in replied_text:
+            match = re.search(r"پیام از کاربر (\d+):", replied_text)
+            if match:
+                target_id = match.group(1)
+                payload = {"chat_id": target_id}
+                method = "sendMessage"
+                if text:
+                    payload["text"] = f"پاسخ پشتیبانی:\n\n{text}"
+                elif message.get("photo"):
+                    method = "sendPhoto"
+                    payload["photo"] = message["photo"][-1]["file_id"]
+                    payload["caption"] = f"پاسخ پشتیبانی:\n{message.get('caption', '')}"
+                elif message.get("document"):
+                    method = "sendDocument"
+                    payload["document"] = message["document"]["file_id"]
+                    payload["caption"] = f"پاسخ پشتیبانی:\n{message.get('caption', '')}"
+                
+                await call_telegram(method, payload)
+                await call_telegram("sendMessage", {"chat_id": chat_id, "text": "✅ پاسخ شما به کاربر ارسال شد."})
+                return
+
+    state = user.get("state")
+    if state:
+        if await handle_state(user, state, message, chat_id, is_admin_user, actual_is_admin):
+            return
+
+    if text.startswith("/"):
+        markup = get_admin_inline_keyboard() if is_admin_user else await get_user_inline_keyboard(actual_is_admin)
+        await call_telegram("sendMessage", {
+            "chat_id": chat_id, 
+            "text": "❌ دستور ناشناس است. لطفاً از دکمه‌های منوی اصلی استفاده کنید.", 
+            "reply_markup": markup
+        })
+    else:
+        markup = get_admin_inline_keyboard() if is_admin_user else await get_user_inline_keyboard(actual_is_admin)
+        await call_telegram("sendMessage", {
+            "chat_id": chat_id,
+            "text": "❌ دستور ناشناس است. لطفاً از دکمه‌های منوی اصلی استفاده کنید.",
+            "reply_markup": markup
+        })
+
+async def process_update(update):
+    try:
+        if "message" in update:
+            await process_message(update["message"])
+        elif "callback_query" in update:
+            await process_callback(update["callback_query"])
+    except Exception:
+        print("Error in process_update:")
+        traceback.print_exc()
+
+# ---------------------------------------------------------------------
+# 🚀 سرور FastAPI
+# ---------------------------------------------------------------------
+app = FastAPI()
+
+@app.on_event("startup")
+async def startup_event():
+    global http_client
+    http_client = httpx.AsyncClient(limits=httpx.Limits(max_keepalive_connections=50, max_connections=100))
+    await init_database_if_needed()
+    asyncio.create_task(background_config_checker())
+    asyncio.create_task(background_expiration_notifier())  # اضافه شدن تسک هشداردهنده تایمر
+    print("🚀 Bot Server Started!")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    global http_client
+    if http_client:
+        await http_client.aclose()
+
+@app.post("/webhook")
+async def handle_webhook(request: Request):
+    update = await request.json()
+    asyncio.create_task(process_update(update))
+    return Response(content="OK", status_code=200)
+
+@app.get("/sub/{token}")
+async def handle_sublink(token: str):
+    sub_res = await query_db("SELECT * FROM subscriptions WHERE token = ? AND status = 'active'", token)
+    sub = get_first_row(sub_res)
+    if not sub:
+        return Response(content="", media_type="text/plain")
+
+    expires_str = sub["expires_at"]
+    try:
+        expires_at = datetime.datetime.strptime(expires_str, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        expires_at = datetime.datetime.strptime(expires_str.split(".")[0], "%Y-%m-%d %H:%M:%S")
+
+    if expires_at < datetime.datetime.utcnow():
+        await execute_db("UPDATE subscriptions SET status = 'expired' WHERE id = ?", sub["id"])
+        return Response(content="", media_type="text/plain")
+
+    cached_payload = await get_kv("cached_configs_payload")
+
+    if cached_payload is None:
+        cfg_res = await query_db("SELECT config_text FROM configs WHERE is_active = 1")
+        confs = get_rows(cfg_res)
+        
+        payload_lines = []
+        
+        # 1. اضافه کردن ثابت و همیشگی بنر به عنوان اولین کانفیگ
+        if BANNER_CONFIG:
+            payload_lines.append(BANNER_CONFIG.strip())
+            
+        payload_lines.extend([c["config_text"].strip() for c in confs if c["config_text"].strip()])
+        combined = "\n".join(payload_lines)
+        cached_payload = base64.b64encode(combined.encode("utf-8")).decode("utf-8")
+        await put_kv("cached_configs_payload", cached_payload, expiration_ttl=300)
+
+    # 2. تنظیم دقیق تایتل جهت شناسایی در تمامی کلاینت‌های V2ray
+    title = "🌐 @TechNowVPNBOT🛜"
+    title_b64 = base64.b64encode(title.encode('utf-8')).decode('utf-8')
+    safe_title = urllib.parse.quote(title)
+    
+    headers = {
+        "Cache-Control": "no-cache, no-store, must-revalidate",
+        "profile-title": f"base64:{title_b64}",
+        "profile-update-interval": "12",
+        "Subscription-Userinfo": f"upload=0; download=0; total=53687091200; expire={int(expires_at.timestamp())}",
+        "Content-Disposition": f"attachment; filename*=UTF-8''{safe_title}; filename=\"{safe_title}\""
     }
-    if reply_markup:
-        payload["reply_markup"] = reply_markup
-    if parse_mode:
-        payload["parse_mode"] = parse_mode
-    return await call_telegram("editMessageText", payload)
+    
+    return Response(content=cached_payload, media_type="text/plain", headers=headers)
 
-def get_back_markup(is_admin_user):
-    return {"inline_keyboard": [[{"text": "🔙 بازگشت به منوی اصلی", "callback_data": "admin_return" if is_admin_user else "user_return"}]]}
-
-# ---------------------------------------------------------------------
-# ⚙️ مدیریت تنظیمات با کش KV کلادفلر
-# ---------------------------------------------------------------------
-async def get_kv(key):
-    url = f"[https://api.cloudflare.com/client/v4/accounts/](https://api.cloudflare.com/client/v4/accounts/){CF_ACCOUNT_ID}/storage/kv/namespaces/{CF_KV_ID}/values/{key}"
-    try:
-        r = await http_client.get(url, headers={"Authorization": f"Bearer {CF_API_TOKEN}"}, timeout=5.0)
-        if r.status_code == 200:
-            return r.text
-    except Exception:
-        pass
-    return None
-
-async def put_kv(key, value, expiration_ttl=None):
-    url = f"[https://api.cloudflare.com/client/v4/accounts/](https://api.cloudflare.com/client/v4/accounts/){CF_ACCOUNT_ID}/storage/kv/namespaces/{CF_KV_ID}/values/{key}"
-    params = {}
-    if expiration_ttl:
-        params['expiration_ttl'] = expiration_ttl
-    try:
-        await http_client.put(url, headers={"Authorization": f"Bearer {CF_API_TOKEN}"}, params=params, content=str(value), timeout=5.0)
-    except Exception:
-        pass
-
-async def delete_kv(key):
-    url = f"[https://api.cloudflare.com/client/v4/accounts/](https://api.cloudflare.com/client/v4/accounts/){CF_ACCOUNT_ID}/storage/kv/namespaces/{CF_KV_ID}/values/{key}"
-    try:
-        await http_client.delete(url, headers={"Authorization": f"Bearer {CF_API_TOKEN}"}, timeout=5.0)
-    except Exception:
-        pass
-
-async def get_setting(key, default=None):
-    cached = get_local_cache(f"setting_{key}")
-    if cached is not None:
-        return cached
-
-    cached_kv = await get_kv(f"setting_{key}")
-    if cached_kv is not None:
-        set_local_cache(f"setting_{key}", cached_kv, 600)
-        return cached_kv
-
-    res = await query_db("SELECT value FROM settings WHERE key = ?", key)
-    row = get_first_row(res)
-    if row:
-        value = row["value"]
-        await put_kv(f"setting_{key}", value, expiration_ttl=600)
-        set_local_cache(f"setting_{key}", value, 600)
-        return value
-    return default
-
-async def set_setting(key, value):
-    await execute_db("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", key, str(value))
-    await put_kv(f"setting_{key}", str(value), expiration_ttl=600)
-    set_local_cache(f"setting_{key}", str(value), 600)
-
-# ---------------------------------------------------------------------
-# 🗄️ مقداردهی اولیه دیتابیس و پردازش کانفیگ
-# ---------------------------------------------------------------------
-def extract_ip_from_config(config_text):
-    try:
-        if config_text.startswith("vmess://"):
-            j = json.loads(base64.b64decode(config_text[8:]).decode('utf-8'))
-            return j.get('add', '')
-        elif "://" in config_text:
-            parsed
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
