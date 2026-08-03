@@ -157,13 +157,7 @@ def get_first_row(db_res):
 
 async def query_db(sql, *args):
     url = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/d1/database/{CF_D1_ID}/query"
-    
-    # Fix 1: Cloudflare D1 Database Array Payload Bug
-    payload_obj = {"sql": sql}
-    if args:
-        payload_obj["params"] = list(args)
-    payload = [payload_obj] # MUST BE A LIST!
-    
+    payload = {"sql": sql, "params": list(args)}
     try:
         res = await http_client.post(url, headers=CF_HEADERS, json=payload, timeout=10.0)
         data = res.json()
@@ -411,7 +405,7 @@ async def background_config_checker():
                     fail_count = cfg.get("fail_count", 0) + 1
                     if fail_count >= 3:
                         await execute_db("DELETE FROM configs WHERE id = ?", cfg["id"])
-                        await delete_kv("cached_raw_configs_v2")
+                        await delete_kv("cached_configs_payload")
                         if ADMIN_IDS:
                             admins = [x.strip() for x in str(ADMIN_IDS).split(",") if x.strip()]
                             for admin_id in admins:
@@ -1044,12 +1038,17 @@ async def process_callback(callback):
     if not defer_answer and data != "end_support":
         await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id})
 
+    # دکمه پایان پشتیبانی (اصلاح شده طبق درخواست)
     if data == "end_support":
         await execute_db("UPDATE users SET state = NULL WHERE id = ?", user["id"])
         
+        # ۱. پاپ‌آپ پایان پشتیبانی
         await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "✅ نشست پشتیبانی پایان یافت.", "show_alert": True})
+        
+        # ۲. تغییر متن پیام فعلی تا دکمه‌اش حذف شود
         await edit_message(chat_id, message_id, "🔚 نشست پشتیبانی پایان یافت.\n\n(این پیام به‌زودی پاک می‌شود)", reply_markup=None)
         
+        # ۳. ارسال منوی اصلی فوراً به کاربر
         markup = await get_user_inline_keyboard(actual_is_admin)
         await call_telegram("sendMessage", {
             "chat_id": chat_id,
@@ -1057,6 +1056,7 @@ async def process_callback(callback):
             "reply_markup": markup
         })
         
+        # ۴. ایجاد یک وظیفه پس‌زمینه برای حذف پیام قبلی بعد از ۵ ثانیه
         async def delete_old_message_later():
             await asyncio.sleep(5)
             await call_telegram("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
@@ -1227,6 +1227,7 @@ async def process_callback(callback):
             expires_at = datetime.datetime.utcnow()
             
         new_expires_at = (expires_at + datetime.timedelta(days=plan["duration_days"])).strftime("%Y-%m-%d %H:%M:%S")
+        # ریست کردن مقدار آلارم به صفر برای تمدید جدید
         await execute_db("UPDATE subscriptions SET expires_at = ?, status = 'active', notified_level = 0 WHERE id = ?", new_expires_at, sub["id"])
         await edit_message(chat_id, message_id, f"✅ سرویس با موفقیت تمدید شد.\nانقضای جدید: {new_expires_at} (UTC)", reply_markup={"inline_keyboard": [[{"text": "🔙 بازگشت", "callback_data": "my_services"}]]})
         return
@@ -1684,7 +1685,7 @@ async def startup_event():
     http_client = httpx.AsyncClient(limits=httpx.Limits(max_keepalive_connections=50, max_connections=100))
     await init_database_if_needed()
     asyncio.create_task(background_config_checker())
-    asyncio.create_task(background_expiration_notifier())
+    asyncio.create_task(background_expiration_notifier())  # اضافه شدن تسک هشداردهنده تایمر
     print("🚀 Bot Server Started!")
 
 @app.on_event("shutdown")
@@ -1701,13 +1702,7 @@ async def handle_webhook(request: Request):
 
 @app.get("/sub/{token}")
 async def handle_sublink(token: str):
-    sub_res = await query_db("""
-        SELECT s.id, s.token, s.expires_at, s.status, p.duration_days, p.max_users 
-        FROM subscriptions s 
-        LEFT JOIN plans p ON s.plan_id = p.id 
-        WHERE s.token = ? AND s.status = 'active'
-    """, token)
-    
+    sub_res = await query_db("SELECT * FROM subscriptions WHERE token = ? AND status = 'active'", token)
     sub = get_first_row(sub_res)
     if not sub:
         return Response(content="", media_type="text/plain")
@@ -1718,49 +1713,9 @@ async def handle_sublink(token: str):
     except ValueError:
         expires_at = datetime.datetime.strptime(expires_str.split(".")[0], "%Y-%m-%d %H:%M:%S")
 
-    now = datetime.datetime.utcnow()
-    if expires_at < now:
+    if expires_at < datetime.datetime.utcnow():
         await execute_db("UPDATE subscriptions SET status = 'expired' WHERE id = ?", sub["id"])
         return Response(content="", media_type="text/plain")
-
-    time_left = expires_at - now
-    days_left = time_left.days
-    hours_left = time_left.seconds // 3600
-    
-    def g2j(gy, gm, gd):
-        g_d_m = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]
-        jy = (gy - 1600) // 33 * 33 + 979
-        gy = (gy - 1600) % 33
-        leap = 1 if (gy % 4 == 0 and gy % 100 != 0) or (gy % 400 == 0) else 0
-        days = 365 * gy + (gy + 3) // 4 - (gy + 99) // 100 + (gy + 399) // 400 - 80 + gd + g_d_m[gm - 1]
-        if leap and gm > 2:
-            days += 1
-        jy += 33 * (days // 12053)
-        days %= 12053
-        jy += 4 * (days // 1461)
-        days %= 1461
-        if days > 365:
-            jy += (days - 1) // 365
-            days = (days - 1) % 365
-        jm = (days // 31) + 1 if days < 186 else ((days - 186) // 30) + 7
-        jd = (days % 31) + 1 if days < 186 else ((days - 186) % 30) + 1
-        return jy, jm, jd
-
-    jy, jm, jd = g2j(expires_at.year, expires_at.month, expires_at.day)
-    date_str = f"{jy:04d}/{jm:02d}/{jd:02d}"
-
-    def to_fa(text):
-        return str(text).translate(str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹"))
-
-    date_str_fa = to_fa(date_str)
-    time_left_str = f"{days_left} روز و {hours_left} ساعت"
-    time_left_fa = to_fa(time_left_str)
-    max_users = sub.get("max_users") or 1
-    max_users_fa = to_fa(str(max_users))
-
-    title = f"{date_str_fa} | {time_left_fa} مانده | {max_users_fa} کاربره"
-    title_b64 = base64.b64encode(title.encode('utf-8')).decode('utf-8')
-    safe_title = urllib.parse.quote(title)
 
     cached_payload = await get_kv("cached_configs_payload")
 
@@ -1769,6 +1724,8 @@ async def handle_sublink(token: str):
         confs = get_rows(cfg_res)
         
         payload_lines = []
+        
+        # 1. اضافه کردن ثابت و همیشگی بنر به عنوان اولین کانفیگ
         if BANNER_CONFIG:
             payload_lines.append(BANNER_CONFIG.strip())
             
@@ -1777,22 +1734,20 @@ async def handle_sublink(token: str):
         cached_payload = base64.b64encode(combined.encode("utf-8")).decode("utf-8")
         await put_kv("cached_configs_payload", cached_payload, expiration_ttl=300)
 
-    # Fix 3: Appending User Info as a Dummy Config via Hashtag
-    decoded_payload = base64.b64decode(cached_payload).decode("utf-8")
-    dummy_config = f"vless://00000000-0000-0000-0000-000000000000@127.0.0.1:80?encryption=none&security=none&type=ws&path=%2F#{safe_title}"
-    final_payload = decoded_payload + "\n" + dummy_config
-    final_payload_b64 = base64.b64encode(final_payload.encode("utf-8")).decode("utf-8")
-
-    # Fix 2: Sublink Client Auto-Update Headers
+    # 2. تنظیم دقیق تایتل جهت شناسایی در تمامی کلاینت‌های V2ray
+    title = "🌐 @TechNowVPNBOT🛜"
+    title_b64 = base64.b64encode(title.encode('utf-8')).decode('utf-8')
+    safe_title = urllib.parse.quote(title)
+    
     headers = {
         "Cache-Control": "no-cache, no-store, must-revalidate",
         "profile-title": f"base64:{title_b64}",
         "profile-update-interval": "12",
-        "Subscription-Userinfo": f"upload=0; download=0; total=10737418240; expire={int(expires_at.timestamp())}",
+        "Subscription-Userinfo": f"upload=0; download=0; total=53687091200; expire={int(expires_at.timestamp())}",
         "Content-Disposition": f"attachment; filename*=UTF-8''{safe_title}; filename=\"{safe_title}\""
     }
     
-    return Response(content=final_payload_b64, media_type="text/plain", headers=headers)
+    return Response(content=cached_payload, media_type="text/plain", headers=headers)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
