@@ -1038,17 +1038,12 @@ async def process_callback(callback):
     if not defer_answer and data != "end_support":
         await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id})
 
-    # دکمه پایان پشتیبانی (اصلاح شده طبق درخواست)
     if data == "end_support":
         await execute_db("UPDATE users SET state = NULL WHERE id = ?", user["id"])
         
-        # ۱. پاپ‌آپ پایان پشتیبانی
         await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "✅ نشست پشتیبانی پایان یافت.", "show_alert": True})
-        
-        # ۲. تغییر متن پیام فعلی تا دکمه‌اش حذف شود
         await edit_message(chat_id, message_id, "🔚 نشست پشتیبانی پایان یافت.\n\n(این پیام به‌زودی پاک می‌شود)", reply_markup=None)
         
-        # ۳. ارسال منوی اصلی فوراً به کاربر
         markup = await get_user_inline_keyboard(actual_is_admin)
         await call_telegram("sendMessage", {
             "chat_id": chat_id,
@@ -1056,7 +1051,6 @@ async def process_callback(callback):
             "reply_markup": markup
         })
         
-        # ۴. ایجاد یک وظیفه پس‌زمینه برای حذف پیام قبلی بعد از ۵ ثانیه
         async def delete_old_message_later():
             await asyncio.sleep(5)
             await call_telegram("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
@@ -1227,7 +1221,6 @@ async def process_callback(callback):
             expires_at = datetime.datetime.utcnow()
             
         new_expires_at = (expires_at + datetime.timedelta(days=plan["duration_days"])).strftime("%Y-%m-%d %H:%M:%S")
-        # ریست کردن مقدار آلارم به صفر برای تمدید جدید
         await execute_db("UPDATE subscriptions SET expires_at = ?, status = 'active', notified_level = 0 WHERE id = ?", new_expires_at, sub["id"])
         await edit_message(chat_id, message_id, f"✅ سرویس با موفقیت تمدید شد.\nانقضای جدید: {new_expires_at} (UTC)", reply_markup={"inline_keyboard": [[{"text": "🔙 بازگشت", "callback_data": "my_services"}]]})
         return
@@ -1685,7 +1678,7 @@ async def startup_event():
     http_client = httpx.AsyncClient(limits=httpx.Limits(max_keepalive_connections=50, max_connections=100))
     await init_database_if_needed()
     asyncio.create_task(background_config_checker())
-    asyncio.create_task(background_expiration_notifier())  # اضافه شدن تسک هشداردهنده تایمر
+    asyncio.create_task(background_expiration_notifier())
     print("🚀 Bot Server Started!")
 
 @app.on_event("shutdown")
@@ -1702,7 +1695,14 @@ async def handle_webhook(request: Request):
 
 @app.get("/sub/{token}")
 async def handle_sublink(token: str):
-    sub_res = await query_db("SELECT * FROM subscriptions WHERE token = ? AND status = 'active'", token)
+    # Modified SQL query to JOIN with plans table
+    sub_res = await query_db("""
+        SELECT s.id, s.token, s.expires_at, s.status, p.duration_days, p.max_users 
+        FROM subscriptions s 
+        LEFT JOIN plans p ON s.plan_id = p.id 
+        WHERE s.token = ? AND s.status = 'active'
+    """, token)
+    
     sub = get_first_row(sub_res)
     if not sub:
         return Response(content="", media_type="text/plain")
@@ -1713,9 +1713,53 @@ async def handle_sublink(token: str):
     except ValueError:
         expires_at = datetime.datetime.strptime(expires_str.split(".")[0], "%Y-%m-%d %H:%M:%S")
 
-    if expires_at < datetime.datetime.utcnow():
+    now = datetime.datetime.utcnow()
+    if expires_at < now:
         await execute_db("UPDATE subscriptions SET status = 'expired' WHERE id = ?", sub["id"])
         return Response(content="", media_type="text/plain")
+
+    # Time calculations
+    time_left = expires_at - now
+    days_left = time_left.days
+    hours_left = time_left.seconds // 3600
+    
+    # Internal Gregorian to Jalali converter function for short Farsi date
+    def g2j(gy, gm, gd):
+        g_d_m = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]
+        jy = (gy - 1600) // 33 * 33 + 979
+        gy = (gy - 1600) % 33
+        leap = 1 if (gy % 4 == 0 and gy % 100 != 0) or (gy % 400 == 0) else 0
+        days = 365 * gy + (gy + 3) // 4 - (gy + 99) // 100 + (gy + 399) // 400 - 80 + gd + g_d_m[gm - 1]
+        if leap and gm > 2:
+            days += 1
+        jy += 33 * (days // 12053)
+        days %= 12053
+        jy += 4 * (days // 1461)
+        days %= 1461
+        if days > 365:
+            jy += (days - 1) // 365
+            days = (days - 1) % 365
+        jm = (days // 31) + 1 if days < 186 else ((days - 186) // 30) + 7
+        jd = (days % 31) + 1 if days < 186 else ((days - 186) % 30) + 1
+        return jy, jm, jd
+
+    jy, jm, jd = g2j(expires_at.year, expires_at.month, expires_at.day)
+    date_str = f"{jy:04d}/{jm:02d}/{jd:02d}"
+
+    def to_fa(text):
+        return str(text).translate(str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹"))
+
+    # Convert values to Farsi formatting
+    date_str_fa = to_fa(date_str)
+    time_left_str = f"{days_left} روز و {hours_left} ساعت"
+    time_left_fa = to_fa(time_left_str)
+    max_users = sub.get("max_users") or 1
+    max_users_fa = to_fa(str(max_users))
+
+    # Dynamic Profile Title Generation
+    title = f"{date_str_fa} | {time_left_fa} مانده | {max_users_fa} کاربره | نامحدود"
+    title_b64 = base64.b64encode(title.encode('utf-8')).decode('utf-8')
+    safe_title = urllib.parse.quote(title)
 
     cached_payload = await get_kv("cached_configs_payload")
 
@@ -1734,11 +1778,7 @@ async def handle_sublink(token: str):
         cached_payload = base64.b64encode(combined.encode("utf-8")).decode("utf-8")
         await put_kv("cached_configs_payload", cached_payload, expiration_ttl=300)
 
-    # 2. تنظیم دقیق تایتل جهت شناسایی در تمامی کلاینت‌های V2ray
-    title = "🌐 @TechNowVPNBOT🛜"
-    title_b64 = base64.b64encode(title.encode('utf-8')).decode('utf-8')
-    safe_title = urllib.parse.quote(title)
-    
+    # 4. Header Updates: Base64 encoding the dynamic title
     headers = {
         "Cache-Control": "no-cache, no-store, must-revalidate",
         "profile-title": f"base64:{title_b64}",
