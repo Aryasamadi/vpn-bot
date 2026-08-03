@@ -11,8 +11,8 @@
 3) نمایش نام قشنگ کانال در دکمه‌ها:
    - اگر در force_channels اسم دستی ندهی، از getChat عنوان کانال را می‌گیرد و در KV cache می‌کند.
    - فرمت دستی همچنان پشتیبانی می‌شود: @username|نام دلخواه
-4) تایتل پویای ساب‌لینک بر اساس پلن کاربر – بدون فاصله، با ایموجی، مختصر و خوانا
-5) کانفیگ دائمی در ابتدای خروجی ساب‌لینک (قابل مشاهده برای همه کاربران)
+4) تایتل پویای ساب‌لینک با فرمت جدید: ⏳Xروز|👥Xکاربره|♾️نامحدود|📆Xروزه
+5) کانفیگ دائمی در ابتدای خروجی ساب‌لینک (قابل مشاهده برای همه کاربران) + پاک‌سازی کش در استارت‌آپ
 """
 
 import os
@@ -635,12 +635,12 @@ async def check_channel_membership(telegram_id, force_refresh=False):
     return True
 
 # =====================================================================
-# 🔥 تغییر اصلی: تابع build_sub_url_async با تایتل پویا (بدون encode، بدون فاصله)
+# 🔥 تغییر اصلی: تابع build_sub_url_async با تایتل پویا (فرمت جدید)
 # =====================================================================
 async def build_sub_url_async(token: str) -> str:
     """
     لینک ساب‌لینک را با فِرگمنت اختصاصی بر اساس اطلاعات پلن و انقضا می‌سازد.
-    عنوان بدون فاصله و با ایموجی‌های مختصر طراحی شده است.
+    فرمت جدید: ⏳Xروز|👥Xکاربره|♾️نامحدود|📆Xروزه
     نتیجه در کش محلی و KV ذخیره می‌شود تا فشار روی دیتابیس کاهش یابد.
     """
     cache_key = f"sub_url_{token}"
@@ -683,10 +683,10 @@ async def build_sub_url_async(token: str) -> str:
     if plan_id:
         duration = row.get("duration_days", 0)
         max_users = row.get("max_users", 1)
-        # فرمت جدید: بدون فاصله، با ایموجی
-        title = f"📆{duration}روزه|👥{max_users}کاربره|♾️نامحدود|⏳{days_left_str}"
+        # فرمت جدید: زمان باقی‌مانده در ابتدا، مدت پلن در انتها
+        title = f"⏳{days_left_str}|👥{max_users}کاربره|♾️نامحدود|📆{duration}روزه"
     else:
-        title = f"🎁تست۱روزه|👤۱کاربره|♾️نامحدود|⏳{days_left_str}"
+        title = f"⏳{days_left_str}|👤۱کاربره|♾️نامحدود|🎁تست۱روزه"
 
     base = APP_BASE_URL.rstrip('/')
     full_url = f"{base}/sub/{token}#{title}"
@@ -1811,9 +1811,13 @@ async def startup_event():
     global http_client
     http_client = httpx.AsyncClient(limits=httpx.Limits(max_keepalive_connections=50, max_connections=100))
     await init_database_if_needed()
+
+    # 🔥 حذف کش قدیمی خروجی ساب‌لینک تا بنر جدید فوراً دیده شود
+    await delete_kv("cached_configs_payload")
+
     asyncio.create_task(background_config_checker())
     asyncio.create_task(background_expiration_notifier())
-    print("🚀 Bot Server Started!")
+    print("🚀 Bot Server Started! (Cache cleared for banner)")
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -1845,7 +1849,7 @@ async def handle_sublink(token: str):
         await execute_db("UPDATE subscriptions SET status = 'expired' WHERE id = ?", sub["id"])
         return Response(content="", media_type="text/plain")
 
-    # ساخت تایتل پویا بدون فاصله و با ایموجی
+    # ساخت تایتل با فرمت جدید
     days_left = (expires_at - now).days
     days_left_str = f"{days_left}روز" if days_left >= 0 else "منقضی"
     plan_id = sub.get("plan_id")
@@ -1855,11 +1859,11 @@ async def handle_sublink(token: str):
         if plan:
             duration = plan.get("duration_days", 0)
             max_users = plan.get("max_users", 1)
-            plan_title = f"📆{duration}روزه|👥{max_users}کاربره|♾️نامحدود|⏳{days_left_str}"
+            plan_title = f"⏳{days_left_str}|👥{max_users}کاربره|♾️نامحدود|📆{duration}روزه"
         else:
-            plan_title = f"نامشخص|⏳{days_left_str}"
+            plan_title = f"⏳{days_left_str}|نامشخص"
     else:
-        plan_title = f"🎁تست۱روزه|👤۱کاربره|♾️نامحدود|⏳{days_left_str}"
+        plan_title = f"⏳{days_left_str}|👤۱کاربره|♾️نامحدود|🎁تست۱روزه"
 
     # ----- کش payload کانفیگ‌ها (همگانی) -----
     cached_payload = await get_kv("cached_configs_payload")
@@ -1868,6 +1872,7 @@ async def handle_sublink(token: str):
         confs = get_rows(cfg_res)
 
         payload_lines = []
+        # بنر دائمی همیشه اول
         if BANNER_CONFIG:
             payload_lines.append(BANNER_CONFIG.strip())
         payload_lines.extend([c["config_text"].strip() for c in confs if c["config_text"].strip()])
