@@ -37,7 +37,7 @@ CF_KV_ID = os.getenv("CF_KV_ID", "")
 APP_BASE_URL = os.getenv("APP_BASE_URL", "https://technowvpnbot.ariyacompany-io.workers.dev")
 
 # بنر آگهی در صدر سابلینک (کانفیگ نامعتبر نمایشی) ثابت شد
-BANNER_CONFIG = "ss://none:1234@1.1.1.1:443#%F0%9F%8C%90%D9%87%D8%B1%20%D8%B1%D9%88%D8%B2%20%D8%B3%D8%A7%D8%A8%D9%84%DB%8C%D9%86%DA%A9%20%D8%AE%D9%88%D8%AF%20%D8%B1%D8%A7%20%D8%A2%D9%BE%D8%AF%DB%8C%D8%AA%20%DA%A9%D9%86%DB%8C%D8%AF%20%E2%9A%A1"
+BANNER_CONFIG = "vless://89210719-c3b9-4053-9c75-c0c3396fabd3@Update:7878?encryption=none&security=none&type=ws&path=%2F#%F0%9F%93%A2%D9%87%D8%B1%20%D8%B1%D9%88%D8%B2%20%D9%84%DB%8C%D9%86%DA%A9%20%D8%AE%D9%88%D8%AF%20%D8%B1%D8%A7%20%D8%A8%D8%B1%D9%88%D8%B2%D8%B1%D8%B3%D8%A7%D9%86%DB%8C%20%DA%A9%D9%86%DB%8C%D8%AF%F0%9F%93%A2"
 
 CF_HEADERS = {
     "Authorization": f"Bearer {CF_API_TOKEN}",
@@ -571,7 +571,7 @@ async def check_channel_membership(telegram_id):
 
 async def build_sub_url_async(token):
     base = APP_BASE_URL.rstrip('/')
-    return f"{base}/sub/{token}"
+    return f"{base}/sub/{token}#🌐@TechNowVPNBOT🛜"
 
 # ---------------------------------------------------------------------
 # 📋 کیبوردهای اینلاین
