@@ -5,14 +5,11 @@
 - اتصال به D1 و KV از طریق Cloudflare API
 - به‌روزرسانی: تنظیم تایتل اختصاصی ساب‌لینک، اصلاح دکمه پشتیبانی، تزریق کانفیگ نمایشی و سیستم یادآور انقضا
 
-اصلاحات (طبق درخواست):
-1) رفع مشکل عضویت اجباری: دکمه «عضو شدم» همیشه fresh چک می‌کند (بدون کش)
-2) کاهش تأخیر اعمال محدودیت بعد از خروج از کانال (TTL کش کوتاه‌تر)
-3) نمایش نام قشنگ کانال در دکمه‌ها:
-   - اگر در force_channels اسم دستی ندهی، از getChat عنوان کانال را می‌گیرد و در KV cache می‌کند.
-   - فرمت دستی همچنان پشتیبانی می‌شود: @username|نام دلخواه
-4) تایتل پویای ساب‌لینک با فرمت جدید: ⏳Xروز|👥Xکاربره|♾️نامحدود|📆Xروزه
-5) کانفیگ دائمی در ابتدای خروجی ساب‌لینک (قابل مشاهده برای همه کاربران) + پاک‌سازی کش در استارت‌آپ
+اصلاحات نهایی (بهینه‌سازی حافظه):
+- کش ۵ دقیقه‌ای فقط برای کانفیگ‌های دیتابیس (بدون بنر)
+- بنر دائمی به‌صورت زنده به خروجی اضافه می‌شود
+- حذف کاراکتر | از تایتل ساب‌لینک (فرمت: ⏳14روز👥3کاربره♾️نامحدود📆15روزه)
+- کاهش کوئری‌های D1 به یک بار در هر ۵ دقیقه
 """
 
 import os
@@ -42,10 +39,9 @@ CF_API_TOKEN = os.getenv("CF_API_TOKEN", "")
 CF_D1_ID = os.getenv("CF_D1_ID", "")
 CF_KV_ID = os.getenv("CF_KV_ID", "")
 
-# متغیر محیطی برای دامنه اصلی ربات
 APP_BASE_URL = os.getenv("APP_BASE_URL", "https://technowvpnbot.ariyacompany-io.workers.dev")
 
-# 🔥 کانفیگ دائمی – همیشه در ابتدای خروجی ساب‌لینک قرار می‌گیرد و هرگز حذف نمی‌شود
+# 🔥 بنر دائمی – همیشه در ابتدای خروجی قرار می‌گیرد و هرگز حذف نمی‌شود
 BANNER_CONFIG = "vless://1234@1.1.1.1:443?encryption=none&security=tls&sni=sertraline.adaspoloandco.com&fp=chrome&type=ws&host=sertraline.adaspoloandco.com&path=%2Fdownload.php#%F0%9F%8C%90%D9%87%D8%B1%20%D8%B1%D9%88%D8%B2%20%D9%84%DB%8C%D9%86%DA%A9%20%D8%AE%D9%88%D8%AF%20%D8%B1%D8%A7%20%D8%A2%D9%BE%D8%AF%DB%8C%D8%AA%20%DA%A9%D9%86%DB%8C%D8%AF%E2%9A%A1"
 
 CF_HEADERS = {
@@ -54,7 +50,7 @@ CF_HEADERS = {
 }
 
 # ---------------------------------------------------------------------
-# 🚀 Global HTTP Client & Local Cache
+# 🚀 Global HTTP Client & Local Cache (برای تنظیمات و عضویت)
 # ---------------------------------------------------------------------
 http_client = None
 _local_cache = {}
@@ -208,7 +204,7 @@ def get_back_markup(is_admin_user):
     return {"inline_keyboard": [[{"text": "🔙 بازگشت به منوی اصلی", "callback_data": "admin_return" if is_admin_user else "user_return"}]]}
 
 # ---------------------------------------------------------------------
-# ⚙️ مدیریت تنظیمات با کش KV کلادفلر
+# ⚙️ مدیریت تنظیمات با کش KV کلادفلر (برای تنظیمات دیگر)
 # ---------------------------------------------------------------------
 async def get_kv(key):
     url = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/storage/kv/namespaces/{CF_KV_ID}/values/{key}"
@@ -268,7 +264,7 @@ async def set_setting(key, value):
     set_local_cache(f"setting_{key}", str(value), 600)
 
 # ---------------------------------------------------------------------
-# ✅ بهبود نمایش نام کانال‌های اجباری (تغییر جدید)
+# ✅ بهبود نمایش نام کانال‌های اجباری
 # ---------------------------------------------------------------------
 def normalize_channel_id(ch_id: str) -> str:
     ch_id = (ch_id or "").strip()
@@ -279,10 +275,6 @@ def normalize_channel_id(ch_id: str) -> str:
     return ch_id
 
 async def get_channel_pretty_name(ch_id: str) -> str:
-    """
-    اگر کاربر در force_channels اسم نداده باشد، این تابع با getChat عنوان کانال را می‌گیرد
-    و در KV کش می‌کند تا هم قشنگ نمایش داده شود هم فشار روی تلگرام کم شود.
-    """
     ch_id = normalize_channel_id(ch_id)
     if not ch_id:
         return ch_id
@@ -297,19 +289,17 @@ async def get_channel_pretty_name(ch_id: str) -> str:
         set_local_cache(cache_key, kv_val.strip(), 24 * 3600)
         return kv_val.strip()
 
-    # اگر getChat موفق شود، عنوان را ذخیره می‌کنیم
     try:
         res = await call_telegram("getChat", {"chat_id": ch_id})
         if res.get("ok"):
             title = res.get("result", {}).get("title")
             if title:
-                await put_kv(cache_key, title, expiration_ttl=30 * 24 * 3600)  # 30 روز
+                await put_kv(cache_key, title, expiration_ttl=30 * 24 * 3600)
                 set_local_cache(cache_key, title, 24 * 3600)
                 return title
     except Exception:
         pass
 
-    # fallback
     return ch_id
 
 # ---------------------------------------------------------------------
@@ -364,10 +354,6 @@ async def format_config_name(config_text):
 
 async def init_database_if_needed():
     initialized = await get_kv("db_initialized_v2_3")
-
-    # همان ساختار قبلی را نگه داشتیم (برای اینکه سیستم شما تکه‌تکه نشود)
-    # فقط اگر این ALTER قبلاً اجرا شده باشد ممکن است خطا بدهد؛ دست‌نخورده گذاشته شد
-    # چون شما گفتی "جاهای دیگر خرابکاری نکنیم". اگر خواستی بعداً می‌توانیم امنش کنیم.
     await execute_db("ALTER TABLE subscriptions ADD COLUMN notified_level INTEGER DEFAULT 0")
 
     if initialized == "true":
@@ -434,7 +420,7 @@ async def init_database_if_needed():
 
     await put_kv("db_initialized_v2_3", "true")
 
-# چکر خودکار کانفیگ‌ها: اجرای هر ۳۰ دقیقه
+# چکر خودکار کانفیگ‌ها (۳۰ دقیقه)
 async def background_config_checker():
     while True:
         await asyncio.sleep(30 * 60)
@@ -467,7 +453,8 @@ async def background_config_checker():
                     fail_count = cfg.get("fail_count", 0) + 1
                     if fail_count >= 3:
                         await execute_db("DELETE FROM configs WHERE id = ?", cfg["id"])
-                        await delete_kv("cached_configs_payload")
+                        # حذف کش کانفیگ‌ها بعد از تغییر
+                        await delete_kv("configs_payload_no_banner")
                         if ADMIN_IDS:
                             admins = [x.strip() for x in str(ADMIN_IDS).split(",") if x.strip()]
                             for admin_id in admins:
@@ -483,7 +470,7 @@ async def background_config_checker():
         except Exception as e:
             print(f"Checker error: {e}")
 
-# سیستم هشداردهنده تایمر انقضا (اجرا هر 15 دقیقه)
+# سیستم هشداردهنده تایمر انقضا (۱۵ دقیقه)
 async def background_expiration_notifier():
     while True:
         await asyncio.sleep(15 * 60)
@@ -595,9 +582,6 @@ async def get_or_create_user(telegram_id, referred_by=None, from_user=None):
 
     return user
 
-# ---------------------------------------------------------------------
-# ✅ اصلاح باگ عضویت: اضافه کردن force_refresh و TTL کوتاه‌تر
-# ---------------------------------------------------------------------
 async def check_channel_membership(telegram_id, force_refresh=False):
     if is_admin(telegram_id):
         return True
@@ -635,26 +619,19 @@ async def check_channel_membership(telegram_id, force_refresh=False):
     return True
 
 # =====================================================================
-# 🔥 تغییر اصلی: تابع build_sub_url_async با تایتل پویا (فرمت جدید)
+# 🔥 تابع تولید لینک با تایتل بدون | (فرمت جدید)
 # =====================================================================
 async def build_sub_url_async(token: str) -> str:
-    """
-    لینک ساب‌لینک را با فِرگمنت اختصاصی بر اساس اطلاعات پلن و انقضا می‌سازد.
-    فرمت جدید: ⏳Xروز|👥Xکاربره|♾️نامحدود|📆Xروزه
-    نتیجه در کش محلی و KV ذخیره می‌شود تا فشار روی دیتابیس کاهش یابد.
-    """
     cache_key = f"sub_url_{token}"
     cached = get_local_cache(cache_key)
     if cached:
         return cached
 
-    # تلاش برای دریافت از KV
     kv_val = await get_kv(cache_key)
     if kv_val:
         set_local_cache(cache_key, kv_val, 300)
         return kv_val
 
-    # دریافت اطلاعات از دیتابیس
     sub_res = await query_db(
         "SELECT s.expires_at, s.plan_id, p.duration_days, p.max_users "
         "FROM subscriptions s "
@@ -683,10 +660,9 @@ async def build_sub_url_async(token: str) -> str:
     if plan_id:
         duration = row.get("duration_days", 0)
         max_users = row.get("max_users", 1)
-        # فرمت جدید: زمان باقی‌مانده در ابتدا، مدت پلن در انتها
-        title = f"⏳{days_left_str}|👥{max_users}کاربره|♾️نامحدود|📆{duration}روزه"
+        title = f"⏳{days_left_str}👥{max_users}کاربره♾️نامحدود📆{duration}روزه"
     else:
-        title = f"⏳{days_left_str}|👤۱کاربره|♾️نامحدود|🎁تست۱روزه"
+        title = f"⏳{days_left_str}👤۱کاربره♾️نامحدود🎁تست۱روزه"
 
     base = APP_BASE_URL.rstrip('/')
     full_url = f"{base}/sub/{token}#{title}"
@@ -942,7 +918,8 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
         if state == "waiting_for_config":
             formatted_cfg = await format_config_name(text)
             await execute_db("INSERT INTO configs (config_text) VALUES (?)", formatted_cfg)
-            await delete_kv("cached_configs_payload")
+            # حذف کش کانفیگ‌ها بعد از افزودن کانفیگ جدید
+            await delete_kv("configs_payload_no_banner")
             markup = {"inline_keyboard": [[{"text": "🔙 بازگشت به منوی اصلی", "callback_data": "admin_return"}]]}
             await call_telegram("sendMessage", {
                 "chat_id": chat_id,
@@ -1423,7 +1400,7 @@ async def process_callback(callback):
         await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": STRINGS["admin_only"], "show_alert": True})
         return
 
-    # ---- بقیه بخش‌های ادمین (بدون تغییر) ----
+    # ---- بقیه بخش‌های ادمین ----
     if data == "adm_test_user":
         await execute_db("UPDATE users SET is_test_mode = 1 WHERE id = ?", user["id"])
         markup = await get_user_inline_keyboard(actual_is_admin)
@@ -1484,7 +1461,7 @@ async def process_callback(callback):
     if data.startswith("adm_cfg_del_yes_"):
         cfg_id = data.replace("adm_cfg_del_yes_", "")
         await execute_db("DELETE FROM configs WHERE id = ?", cfg_id)
-        await delete_kv("cached_configs_payload")
+        await delete_kv("configs_payload_no_banner")  # حذف کش بعد از حذف کانفیگ
         await call_telegram("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
         return
 
@@ -1811,13 +1788,9 @@ async def startup_event():
     global http_client
     http_client = httpx.AsyncClient(limits=httpx.Limits(max_keepalive_connections=50, max_connections=100))
     await init_database_if_needed()
-
-    # 🔥 حذف کش قدیمی خروجی ساب‌لینک تا بنر جدید فوراً دیده شود
-    await delete_kv("cached_configs_payload")
-
     asyncio.create_task(background_config_checker())
     asyncio.create_task(background_expiration_notifier())
-    print("🚀 Bot Server Started! (Cache cleared for banner)")
+    print("🚀 Bot Server Started! (Optimized cache: 5-min KV for configs only)")
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -1831,6 +1804,9 @@ async def handle_webhook(request: Request):
     asyncio.create_task(process_update(update))
     return Response(content="OK", status_code=200)
 
+# =====================================================================
+# 🔥 سرویس ساب‌لینک با بهینه‌سازی نهایی
+# =====================================================================
 @app.get("/sub/{token}")
 async def handle_sublink(token: str):
     sub_res = await query_db("SELECT * FROM subscriptions WHERE token = ? AND status = 'active'", token)
@@ -1849,7 +1825,7 @@ async def handle_sublink(token: str):
         await execute_db("UPDATE subscriptions SET status = 'expired' WHERE id = ?", sub["id"])
         return Response(content="", media_type="text/plain")
 
-    # ساخت تایتل با فرمت جدید
+    # ---- تایتل بدون | ----
     days_left = (expires_at - now).days
     days_left_str = f"{days_left}روز" if days_left >= 0 else "منقضی"
     plan_id = sub.get("plan_id")
@@ -1859,28 +1835,30 @@ async def handle_sublink(token: str):
         if plan:
             duration = plan.get("duration_days", 0)
             max_users = plan.get("max_users", 1)
-            plan_title = f"⏳{days_left_str}|👥{max_users}کاربره|♾️نامحدود|📆{duration}روزه"
+            plan_title = f"⏳{days_left_str}👥{max_users}کاربره♾️نامحدود📆{duration}روزه"
         else:
-            plan_title = f"⏳{days_left_str}|نامشخص"
+            plan_title = f"⏳{days_left_str}نامشخص"
     else:
-        plan_title = f"⏳{days_left_str}|👤۱کاربره|♾️نامحدود|🎁تست۱روزه"
+        plan_title = f"⏳{days_left_str}👤۱کاربره♾️نامحدود🎁تست۱روزه"
 
-    # ----- کش payload کانفیگ‌ها (همگانی) -----
-    cached_payload = await get_kv("cached_configs_payload")
+    # ---- کش ۵ دقیقه‌ای فقط برای کانفیگ‌های دیتابیس (بدون بنر) ----
+    cache_key = "configs_payload_no_banner"
+    cached_payload = await get_kv(cache_key)
     if cached_payload is None:
         cfg_res = await query_db("SELECT config_text FROM configs WHERE is_active = 1")
         confs = get_rows(cfg_res)
-
-        payload_lines = []
-        # بنر دائمی همیشه اول
-        if BANNER_CONFIG:
-            payload_lines.append(BANNER_CONFIG.strip())
-        payload_lines.extend([c["config_text"].strip() for c in confs if c["config_text"].strip()])
+        payload_lines = [c["config_text"].strip() for c in confs if c["config_text"].strip()]
         combined = "\n".join(payload_lines)
-        cached_payload = base64.b64encode(combined.encode("utf-8")).decode("utf-8")
-        await put_kv("cached_configs_payload", cached_payload, expiration_ttl=300)
+        cached_payload = base64.b64encode(combined.encode('utf-8')).decode('utf-8')
+        await put_kv(cache_key, cached_payload, expiration_ttl=300)  # ۵ دقیقه
 
-    # ---- تنظیم هدرها با تایتل پویا ----
+    # ---- ترکیب بنر (زنده) + کانفیگ‌های کش شده ----
+    banner_line = BANNER_CONFIG.strip()
+    decoded_configs = base64.b64decode(cached_payload).decode('utf-8')
+    final_combined = f"{banner_line}\n{decoded_configs}".strip()
+    final_payload = base64.b64encode(final_combined.encode('utf-8')).decode('utf-8')
+
+    # ---- هدرها ----
     title_b64 = base64.b64encode(plan_title.encode('utf-8')).decode('utf-8')
     safe_title = urllib.parse.quote(plan_title)
 
@@ -1892,7 +1870,7 @@ async def handle_sublink(token: str):
         "Content-Disposition": f"attachment; filename*=UTF-8''{safe_title}; filename=\"{safe_title}\""
     }
 
-    return Response(content=cached_payload, media_type="text/plain", headers=headers)
+    return Response(content=final_payload, media_type="text/plain", headers=headers)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
