@@ -4,12 +4,7 @@
 - بازنویسی شده برای اجرای مستقل در پایتون استاندارد
 - اتصال به D1 و KV از طریق Cloudflare API
 - به‌روزرسانی: تنظیم تایتل اختصاصی ساب‌لینک، اصلاح دکمه پشتیبانی، تزریق کانفیگ نمایشی و سیستم یادآور انقضا
-
-اصلاحات نهایی (رفع قطعی مشکل بنر):
-- بنر به‌عنوان کانفیگ دائمی با id=0 در دیتابیس ذخیره می‌شود
-- کش KV شامل بنر + کانفیگ‌های دیگر است
-- چکر خودکار بنر را حذف نمی‌کند
-- حذف کاراکتر | از تایتل (فرمت: ⏳14روز👥3کاربره♾️نامحدود📆15روزه)
+- ویژگی جدید: دریافت خودکار کانفیگ‌های سالم از ساب‌لینک‌های خارجی (با چک پینگ TCP)
 """
 
 import os
@@ -43,6 +38,16 @@ APP_BASE_URL = os.getenv("APP_BASE_URL", "https://technowvpnbot.ariyacompany-io.
 
 # 🔥 بنر دائمی – این لینک به‌عنوان کانفیگ با id=0 در دیتابیس ذخیره می‌شود
 BANNER_CONFIG = "vless://1234@1.1.1.1:443?encryption=none&security=tls&sni=sertraline.adaspoloandco.com&fp=chrome&type=ws&host=sertraline.adaspoloandco.com&path=%2Fdownload.php#%F0%9F%8C%90%D9%87%D8%B1%20%D8%B1%D9%88%D8%B2%20%D9%84%DB%8C%D9%86%DA%A9%20%D8%AE%D9%88%D8%AF%20%D8%B1%D8%A7%20%D8%A2%D9%BE%D8%AF%DB%8C%D8%AA%20%DA%A9%D9%86%DB%8C%D8%AF%E2%9A%A1"
+
+# 📌 لیست ساب‌لینک‌های خارجی (می‌توانی به‌صورت دستی یا از تنظیمات بخوانی)
+EXTERNAL_SUBLINKS = os.getenv("EXTERNAL_SUBLINKS", "").split(",")
+# مثلاً: "https://example1.com/sub,https://example2.com/sub"
+
+# فعال/غیرفعال کردن ویژگی (پیش‌فرض: فعال)
+EXTERNAL_ENABLED = os.getenv("EXTERNAL_ENABLED", "true").lower() == "true"
+
+# آستانه پینگ (میلی‌ثانیه) – کانفیگ‌های با پینگ کمتر از این مقدار سالم در نظر گرفته می‌شوند
+PING_THRESHOLD_MS = int(os.getenv("PING_THRESHOLD_MS", "150"))
 
 CF_HEADERS = {
     "Authorization": f"Bearer {CF_API_TOKEN}",
@@ -317,6 +322,18 @@ def extract_ip_from_config(config_text):
         pass
     return ""
 
+def extract_port_from_config(config_text):
+    try:
+        if config_text.startswith("vmess://"):
+            j = json.loads(base64.b64decode(config_text[8:]).decode('utf-8'))
+            return int(j.get('port', 443))
+        elif "://" in config_text:
+            parsed = urllib.parse.urlparse(config_text)
+            return parsed.port or 443
+    except:
+        pass
+    return 443
+
 async def format_config_name(config_text):
     ip = extract_ip_from_config(config_text)
     if not ip:
@@ -353,15 +370,14 @@ async def format_config_name(config_text):
     return config_text
 
 async def init_database_if_needed():
-    initialized = await get_kv("db_initialized_v2_4")  # نسخه جدید برای اضافه کردن بنر
+    initialized = await get_kv("db_initialized_v2_4")
     await execute_db("ALTER TABLE subscriptions ADD COLUMN notified_level INTEGER DEFAULT 0")
 
-    # 🔥 اضافه کردن بنر به‌عنوان کانفیگ دائمی با id=0 (اگر وجود نداشت)
+    # 🔥 اضافه کردن بنر به‌عنوان کانفیگ دائمی با id=0
     banner_exists = await query_db("SELECT id FROM configs WHERE id = 0")
     if not get_first_row(banner_exists):
         await execute_db("INSERT INTO configs (id, config_text, is_active, fail_count) VALUES (0, ?, 1, 0)", BANNER_CONFIG)
     else:
-        # اطمینان از اینکه بنر همیشه active باشد
         await execute_db("UPDATE configs SET is_active = 1, config_text = ? WHERE id = 0", BANNER_CONFIG)
 
     if initialized == "true":
@@ -420,6 +436,7 @@ async def init_database_if_needed():
     defaults = {
         "referral_reward": "2000",
         "force_channels": "",
+        "external_sublinks": ",".join(EXTERNAL_SUBLINKS),  # ذخیره لیست در تنظیمات
     }
     for key, val in defaults.items():
         res = await query_db("SELECT value FROM settings WHERE key = ?", key)
@@ -428,119 +445,79 @@ async def init_database_if_needed():
 
     await put_kv("db_initialized_v2_4", "true")
 
-# چکر خودکار کانفیگ‌ها (۳۰ دقیقه) – بنر با id=0 را حذف نمی‌کند
-async def background_config_checker():
-    while True:
-        await asyncio.sleep(30 * 60)
-        try:
-            res = await query_db("SELECT * FROM configs WHERE is_active = 1 AND id != 0")  # بنر را نادیده بگیر
-            configs = get_rows(res)
-            for cfg in configs:
-                is_healthy = False
-                try:
-                    ip = extract_ip_from_config(cfg["config_text"])
-                    port = 443
-                    if cfg["config_text"].startswith("vmess://"):
-                        j = json.loads(base64.b64decode(cfg["config_text"][8:]).decode('utf-8'))
-                        port = int(j.get('port', 443))
-                    elif "://" in cfg["config_text"]:
-                        parsed = urllib.parse.urlparse(cfg["config_text"])
-                        port = parsed.port or 443
+# ---------------------------------------------------------------------
+# 🧪 توابع چک سلامت کانفیگ‌های خارجی
+# ---------------------------------------------------------------------
+async def check_config_health(config_text: str) -> bool:
+    """بررسی سلامت یک کانفیگ با اتصال TCP به آی‌پی و پورت آن"""
+    ip = extract_ip_from_config(config_text)
+    port = extract_port_from_config(config_text)
+    if not ip or not port:
+        return False
+    try:
+        reader, writer = await asyncio.wait_for(asyncio.open_connection(ip, port), timeout=3.0)
+        writer.close()
+        await writer.wait_closed()
+        return True
+    except:
+        return False
 
-                    if ip:
-                        reader, writer = await asyncio.wait_for(asyncio.open_connection(ip, port), timeout=4.0)
-                        writer.close()
-                        await writer.wait_closed()
-                        is_healthy = True
-                    else:
-                        is_healthy = False
+async def fetch_and_filter_external_configs():
+    """دریافت ساب‌لینک‌های خارجی، استخراج کانفیگ‌ها و فیلتر کردن بر اساس سلامت"""
+    if not EXTERNAL_ENABLED:
+        return []
+
+    external_sublinks_str = await get_setting("external_sublinks", "")
+    sublinks = [s.strip() for s in external_sublinks_str.split(",") if s.strip()]
+    if not sublinks:
+        return []
+
+    all_configs = []
+    for sub_url in sublinks:
+        try:
+            resp = await http_client.get(sub_url, timeout=10.0)
+            if resp.status_code == 200:
+                # ممکن است خروجی base64 یا plain text باشد
+                content = resp.text
+                # اگر base64 بود decode کن
+                try:
+                    decoded = base64.b64decode(content).decode('utf-8')
+                    lines = decoded.splitlines()
                 except:
-                    is_healthy = False
-
-                if not is_healthy:
-                    fail_count = cfg.get("fail_count", 0) + 1
-                    if fail_count >= 3:
-                        await execute_db("DELETE FROM configs WHERE id = ?", cfg["id"])
-                        # حذف کش کانفیگ‌ها بعد از تغییر
-                        await delete_kv("configs_payload")
-                        if ADMIN_IDS:
-                            admins = [x.strip() for x in str(ADMIN_IDS).split(",") if x.strip()]
-                            for admin_id in admins:
-                                await call_telegram("sendMessage", {
-                                    "chat_id": int(admin_id),
-                                    "text": f"⚠️ کانفیگ زیر به دلیل 3 بار عدم اتصال متوالی حذف گردید:\n\n`{cfg['config_text']}`",
-                                    "parse_mode": "Markdown"
-                                })
-                    else:
-                        await execute_db("UPDATE configs SET fail_count = ? WHERE id = ?", fail_count, cfg["id"])
-                else:
-                    await execute_db("UPDATE configs SET fail_count = 0 WHERE id = ?", cfg["id"])
+                    lines = content.splitlines()
+                for line in lines:
+                    line = line.strip()
+                    if line and ("://" in line) and not line.startswith("#"):
+                        all_configs.append(line)
         except Exception as e:
-            print(f"Checker error: {e}")
+            print(f"Error fetching external sublink {sub_url}: {e}")
 
-# سیستم هشداردهنده تایمر انقضا (۱۵ دقیقه)
-async def background_expiration_notifier():
+    # فیلتر کردن کانفیگ‌های سالم
+    healthy_configs = []
+    for cfg in all_configs:
+        if await check_config_health(cfg):
+            healthy_configs.append(cfg)
+            # برای جلوگیری از بیش از حد سنگین شدن، حداکثر ۱۰ کانفیگ سالم را نگه می‌داریم
+            if len(healthy_configs) >= 10:
+                break
+
+    # ذخیره در KV
+    if healthy_configs:
+        await put_kv("external_configs", "\n".join(healthy_configs), expiration_ttl=900)  # ۱۵ دقیقه
+    else:
+        await delete_kv("external_configs")
+
+    return healthy_configs
+
+async def background_external_updater():
+    """تسک پس‌زمینه برای به‌روزرسانی دوره‌ای کانفیگ‌های خارجی"""
     while True:
-        await asyncio.sleep(15 * 60)
+        await asyncio.sleep(15 * 60)  # هر ۱۵ دقیقه
         try:
-            now = datetime.datetime.utcnow()
-            query = """
-                SELECT s.id as sub_id, s.token, s.expires_at, s.notified_level,
-                       u.telegram_id, u.balance
-                FROM subscriptions s
-                JOIN users u ON s.user_id = u.id
-                WHERE s.status = 'active'
-            """
-            res = await query_db(query)
-            subs = get_rows(res)
-
-            for sub in subs:
-                try:
-                    expires_at = datetime.datetime.strptime(sub["expires_at"], "%Y-%m-%d %H:%M:%S")
-                except Exception:
-                    continue
-
-                time_left = expires_at - now
-                time_left_sec = time_left.total_seconds()
-
-                if time_left_sec <= 0:
-                    continue
-
-                notified_level = sub.get("notified_level", 0)
-                tg_id = sub["telegram_id"]
-                sub_url = await build_sub_url_async(sub["token"])
-                msg = ""
-                new_level = notified_level
-
-                if time_left_sec <= 3600 and notified_level < 3:
-                    msg = (f"⚠️ **هشدار خیلی مهم** ⚠️\n\nفقط **۱ ساعت** تا پایان اعتبار سرویس شما باقی مانده است!\n\n"
-                           f"🔗 لینک سرویس: `{sub_url}`\n💰 موجودی کیف پول: {sub['balance']:,} تومان\n\n"
-                           f"جهت جلوگیری از قطعی اینترنت، سریعاً از طریق دکمه زیر تمدید کنید.")
-                    new_level = 3
-                elif time_left_sec <= 86400 and notified_level < 2:
-                    msg = (f"⏳ **یادآوری تمدید**\n\nسرویس شما **۲۴ ساعت** دیگر منقضی خواهد شد.\n\n"
-                           f"🔗 لینک سرویس: `{sub_url}`\n💰 موجودی کیف پول: {sub['balance']:,} تومان\n\n"
-                           f"لطفاً پیش از اتمام زمان، اکانت خود را شارژ و تمدید نمایید.")
-                    new_level = 2
-                elif time_left_sec <= 259200 and notified_level < 1:
-                    msg = (f"📅 **اطلاعیه سرویس**\n\nکاربر گرامی، تنها **۳ روز** تا پایان اشتراک شما باقی مانده است.\n\n"
-                           f"🔗 لینک سرویس: `{sub_url}`\n💰 موجودی کیف پول: {sub['balance']:,} تومان\n\n"
-                           f"می‌توانید با دعوت دوستان حساب خود را رایگان شارژ کنید یا تمدید نمایید.")
-                    new_level = 1
-
-                if msg:
-                    markup = {"inline_keyboard": [[{"text": "♻️ تمدید سریع سرویس", "callback_data": f"renew_sub_{sub['token']}"}]]}
-                    res_tg = await call_telegram("sendMessage", {
-                        "chat_id": int(tg_id),
-                        "text": msg,
-                        "parse_mode": "Markdown",
-                        "reply_markup": markup
-                    })
-                    if res_tg.get("ok"):
-                        await execute_db("UPDATE subscriptions SET notified_level = ? WHERE id = ?", new_level, sub["sub_id"])
-
+            await fetch_and_filter_external_configs()
+            print("[CAT] External configs updated.")
         except Exception as e:
-            print(f"Notifier error: {e}")
+            print(f"[CAT] External updater error: {e}")
 
 # ---------------------------------------------------------------------
 # 🧑‍💼 توابع کاربر و ادمین
@@ -926,7 +903,6 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
         if state == "waiting_for_config":
             formatted_cfg = await format_config_name(text)
             await execute_db("INSERT INTO configs (config_text) VALUES (?)", formatted_cfg)
-            # حذف کش کانفیگ‌ها بعد از افزودن کانفیگ جدید
             await delete_kv("configs_payload")
             markup = {"inline_keyboard": [[{"text": "🔙 بازگشت به منوی اصلی", "callback_data": "admin_return"}]]}
             await call_telegram("sendMessage", {
@@ -1799,9 +1775,16 @@ async def startup_event():
     global http_client
     http_client = httpx.AsyncClient(limits=httpx.Limits(max_keepalive_connections=50, max_connections=100))
     await init_database_if_needed()
+
+    # شروع تسک‌های پس‌زمینه
     asyncio.create_task(background_config_checker())
     asyncio.create_task(background_expiration_notifier())
-    print("🚀 Bot Server Started! (Banner is now a permanent config in DB)")
+    if EXTERNAL_ENABLED:
+        asyncio.create_task(background_external_updater())
+        # یک بار اولیه هم اجرا کن
+        await fetch_and_filter_external_configs()
+
+    print("🚀 Bot Server Started! (External configs feature: {})".format("ON" if EXTERNAL_ENABLED else "OFF"))
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -1816,7 +1799,7 @@ async def handle_webhook(request: Request):
     return Response(content="OK", status_code=200)
 
 # =====================================================================
-# 🔥 سرویس ساب‌لینک – کش شامل بنر + کانفیگ‌ها
+# 🔥 سرویس ساب‌لینک – ترکیب بنر + کانفیگ‌های داخلی + خارجی
 # =====================================================================
 @app.get("/sub/{token}")
 async def handle_sublink(token: str):
@@ -1852,7 +1835,7 @@ async def handle_sublink(token: str):
     else:
         plan_title = f"⏳{days_left_str}👤۱کاربره♾️نامحدود🎁تست۱روزه"
 
-    # ---- کش ۵ دقیقه‌ای شامل بنر + کانفیگ‌ها (id=0 بنر است) ----
+    # ---- کش ۵ دقیقه‌ای برای کانفیگ‌های داخلی (شامل بنر) ----
     cache_key = "configs_payload"
     cached_payload = await get_kv(cache_key)
     if cached_payload is None:
@@ -1861,7 +1844,22 @@ async def handle_sublink(token: str):
         payload_lines = [c["config_text"].strip() for c in confs if c["config_text"].strip()]
         combined = "\n".join(payload_lines)
         cached_payload = base64.b64encode(combined.encode('utf-8')).decode('utf-8')
-        await put_kv(cache_key, cached_payload, expiration_ttl=300)  # ۵ دقیقه
+        await put_kv(cache_key, cached_payload, expiration_ttl=300)
+
+    # ---- دریافت کانفیگ‌های خارجی سالم از KV ----
+    external_configs_str = await get_kv("external_configs") if EXTERNAL_ENABLED else None
+    external_lines = []
+    if external_configs_str:
+        external_lines = [line.strip() for line in external_configs_str.splitlines() if line.strip()]
+
+    # ---- ترکیب نهایی: بنر + داخلی + خارجی ----
+    decoded_internal = base64.b64decode(cached_payload).decode('utf-8')
+    all_configs = decoded_internal.splitlines()
+    if external_lines:
+        all_configs.extend(external_lines)
+
+    final_combined = "\n".join([line.strip() for line in all_configs if line.strip()])
+    final_payload = base64.b64encode(final_combined.encode('utf-8')).decode('utf-8')
 
     # ---- هدرها ----
     title_b64 = base64.b64encode(plan_title.encode('utf-8')).decode('utf-8')
@@ -1875,7 +1873,7 @@ async def handle_sublink(token: str):
         "Content-Disposition": f"attachment; filename*=UTF-8''{safe_title}; filename=\"{safe_title}\""
     }
 
-    return Response(content=cached_payload, media_type="text/plain", headers=headers)
+    return Response(content=final_payload, media_type="text/plain", headers=headers)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
