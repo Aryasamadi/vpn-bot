@@ -1038,6 +1038,11 @@ async def process_callback(callback):
     if not defer_answer and data != "end_support":
         await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id})
 
+    # --- دیباگ: جابجا شدن شرط عضویت به بالاترین سطح ---
+    if data != "chk_membership" and not await check_channel_membership(telegram_id):
+        await send_membership_requirement(chat_id, message_id)
+        return
+
     # دکمه پایان پشتیبانی (اصلاح شده طبق درخواست)
     if data == "end_support":
         await execute_db("UPDATE users SET state = NULL WHERE id = ?", user["id"])
@@ -1088,10 +1093,6 @@ async def process_callback(callback):
                 "text": STRINGS["start_welcome"],
                 "reply_markup": markup
             })
-        return
-
-    if data != "chk_membership" and not await check_channel_membership(telegram_id):
-        await send_membership_requirement(chat_id, message_id)
         return
 
     if data == "chk_membership":
@@ -1595,6 +1596,11 @@ async def process_message(message):
     actual_is_admin = is_admin(telegram_id, user_data=None)
     is_admin_user = is_admin(telegram_id, user_data=user)
 
+    # --- دیباگ: جابجا شدن شرط عضویت به بالاترین سطح ---
+    if not await check_channel_membership(telegram_id):
+        await send_membership_requirement(chat_id)
+        return
+
     if text.startswith("/start"):
         user["state"] = None
         user["plan_data"] = None
@@ -1639,10 +1645,6 @@ async def process_message(message):
                 await call_telegram(method, payload)
                 await call_telegram("sendMessage", {"chat_id": chat_id, "text": "✅ پاسخ شما به کاربر ارسال شد."})
                 return
-
-    if not await check_channel_membership(telegram_id):
-        await send_membership_requirement(chat_id)
-        return
 
     state = user.get("state")
     if state:
