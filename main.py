@@ -11,7 +11,7 @@
 3) نمایش نام قشنگ کانال در دکمه‌ها:
    - اگر در force_channels اسم دستی ندهی، از getChat عنوان کانال را می‌گیرد و در KV cache می‌کند.
    - فرمت دستی همچنان پشتیبانی می‌شود: @username|نام دلخواه
-4) تایتل پویای ساب‌لینک بر اساس پلن کاربر (مدت، تعداد کاربر، وضعیت، روزهای باقی‌مانده)
+4) تایتل پویای ساب‌لینک بر اساس پلن کاربر (مدت، تعداد کاربر، وضعیت، روزهای باقی‌مانده) در فِرگمنت URL
 """
 
 import os
@@ -633,9 +633,69 @@ async def check_channel_membership(telegram_id, force_refresh=False):
     set_local_cache(cache_key, True, 20)
     return True
 
-async def build_sub_url_async(token):
+# =====================================================================
+# 🔥 تغییر اصلی: تابع build_sub_url_async با تایتل پویا
+# =====================================================================
+async def build_sub_url_async(token: str) -> str:
+    """
+    لینک ساب‌لینک را با فِرگمنت اختصاصی بر اساس اطلاعات پلن و انقضا می‌سازد.
+    نتیجه در کش محلی و KV ذخیره می‌شود تا فشار روی دیتابیس کاهش یابد.
+    """
+    cache_key = f"sub_url_{token}"
+    cached = get_local_cache(cache_key)
+    if cached:
+        return cached
+
+    # تلاش برای دریافت از KV
+    kv_val = await get_kv(cache_key)
+    if kv_val:
+        set_local_cache(cache_key, kv_val, 300)
+        return kv_val
+
+    # دریافت اطلاعات از دیتابیس
+    sub_res = await query_db(
+        "SELECT s.expires_at, s.plan_id, p.duration_days, p.max_users "
+        "FROM subscriptions s "
+        "LEFT JOIN plans p ON s.plan_id = p.id "
+        "WHERE s.token = ? AND s.status = 'active'",
+        token
+    )
+    row = get_first_row(sub_res)
+    if not row:
+        # در صورت نبود اشتراک، لینک بدون فِرگمنت برگردان (یا قدیمی)
+        base = APP_BASE_URL.rstrip('/')
+        fallback = f"{base}/sub/{token}"
+        set_local_cache(cache_key, fallback, 60)
+        return fallback
+
+    expires_at_str = row["expires_at"]
+    try:
+        expires_at = datetime.datetime.strptime(expires_at_str, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        expires_at = datetime.datetime.strptime(expires_at_str.split(".")[0], "%Y-%m-%d %H:%M:%S")
+
+    now = datetime.datetime.utcnow()
+    days_left = (expires_at - now).days
+    days_left_str = f"{days_left} روز مانده" if days_left >= 0 else "منقضی شده"
+
+    plan_id = row.get("plan_id")
+    if plan_id:
+        duration = row.get("duration_days", 0)
+        max_users = row.get("max_users", 1)
+        title = f"{duration} روزه | {max_users} کاربره | نامحدود | {days_left_str}"
+    else:
+        title = f"تست ۱ روزه | ۱ کاربره | نامحدود | {days_left_str}"
+
+    # ساخت لینک نهایی
     base = APP_BASE_URL.rstrip('/')
-    return f"{base}/sub/{token}#🌐@TechNowVPNBOT🛜"
+    encoded_title = urllib.parse.quote(title)
+    full_url = f"{base}/sub/{token}#{encoded_title}"
+
+    # ذخیره در کش‌ها
+    set_local_cache(cache_key, full_url, 300)
+    await put_kv(cache_key, full_url, expiration_ttl=300)
+
+    return full_url
 
 # ---------------------------------------------------------------------
 # 📋 کیبوردهای اینلاین
@@ -1786,11 +1846,9 @@ async def handle_sublink(token: str):
         await execute_db("UPDATE subscriptions SET status = 'expired' WHERE id = ?", sub["id"])
         return Response(content="", media_type="text/plain")
 
-    # ------ ساخت تایتل پویا بر اساس پلن و تاریخ انقضا ------
-    plan_title = "نامشخص"
+    # ساخت تایتل برای هدرها (همانند فِرگمنت)
     days_left = (expires_at - now).days
     days_left_str = f"{days_left} روز مانده" if days_left >= 0 else "منقضی شده"
-
     plan_id = sub.get("plan_id")
     if plan_id:
         plan_res = await query_db("SELECT duration_days, max_users FROM plans WHERE id = ?", plan_id)
@@ -1802,7 +1860,6 @@ async def handle_sublink(token: str):
         else:
             plan_title = f"نامشخص | {days_left_str}"
     else:
-        # حالت تست رایگان یا بدون پلن
         plan_title = f"تست ۱ روزه | ۱ کاربره | نامحدود | {days_left_str}"
 
     # ----- کش payload کانفیگ‌ها (همگانی) -----
