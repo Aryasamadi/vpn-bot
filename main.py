@@ -5,6 +5,7 @@
 - اتصال به D1 و KV از طریق Cloudflare API
 - به‌روزرسانی: تنظیم تایتل اختصاصی ساب‌لینک، اصلاح دکمه پشتیبانی، تزریق کانفیگ نمایشی و سیستم یادآور انقضا
 - ویژگی جدید: دریافت خودکار کانفیگ‌های سالم از ساب‌لینک‌های خارجی (با چک پینگ TCP)
+- پشتیبانی از فایل‌های .txt به عنوان لیست ساب‌لینک (توسط کاربر)
 """
 
 import os
@@ -443,7 +444,7 @@ async def init_database_if_needed():
     await put_kv("db_initialized_v2_4", "true")
 
 # ---------------------------------------------------------------------
-# 🧪 توابع چک سلامت کانفیگ‌های خارجی
+# 🧪 توابع چک سلامت کانفیگ‌های خارجی (با پشتیبانی از فایل‌های .txt)
 # ---------------------------------------------------------------------
 async def check_config_health(config_text: str) -> bool:
     """بررسی سلامت یک کانفیگ با اتصال TCP به آی‌پی و پورت آن"""
@@ -460,17 +461,41 @@ async def check_config_health(config_text: str) -> bool:
         return False
 
 async def fetch_and_filter_external_configs():
-    """دریافت ساب‌لینک‌های خارجی، استخراج کانفیگ‌ها و فیلتر کردن بر اساس سلامت"""
+    """دریافت ساب‌لینک‌های خارجی، پشتیبانی از فایل‌های لیست (.txt) و فیلتر سلامت"""
     if not EXTERNAL_ENABLED:
         return []
 
     external_sublinks_str = await get_setting("external_sublinks", "")
-    sublinks = [s.strip() for s in external_sublinks_str.split(",") if s.strip()]
-    if not sublinks:
+    raw_items = [s.strip() for s in external_sublinks_str.split(",") if s.strip()]
+    if not raw_items:
         return []
 
+    # لیست نهایی ساب‌لینک‌ها (پس از گسترش فایل‌های .txt)
+    final_sublinks = []
+    for item in raw_items:
+        # اگر آیتم با .txt ختم شد، آن را دانلود کرده و خطوط را به‌عنوان ساب‌لینک در نظر بگیر
+        if item.endswith(".txt"):
+            try:
+                resp = await http_client.get(item, timeout=10.0)
+                if resp.status_code == 200:
+                    lines = resp.text.splitlines()
+                    for line in lines:
+                        line = line.strip()
+                        if line and not line.startswith("#"):
+                            final_sublinks.append(line)
+                else:
+                    print(f"[CAT] Failed to fetch txt list: {item}")
+            except Exception as e:
+                print(f"[CAT] Error fetching txt list {item}: {e}")
+        else:
+            # اگر مستقیماً ساب‌لینک است
+            final_sublinks.append(item)
+
+    # حذف تکراری‌ها
+    final_sublinks = list(dict.fromkeys(final_sublinks))
+
     all_configs = []
-    for sub_url in sublinks:
+    for sub_url in final_sublinks:
         try:
             resp = await http_client.get(sub_url, timeout=10.0)
             if resp.status_code == 200:
@@ -485,7 +510,7 @@ async def fetch_and_filter_external_configs():
                     if line and ("://" in line) and not line.startswith("#"):
                         all_configs.append(line)
         except Exception as e:
-            print(f"Error fetching external sublink {sub_url}: {e}")
+            print(f"[CAT] Error fetching sublink {sub_url}: {e}")
 
     healthy_configs = []
     for cfg in all_configs:
@@ -499,6 +524,7 @@ async def fetch_and_filter_external_configs():
     else:
         await delete_kv("external_configs")
 
+    print(f"[CAT] External configs updated: {len(healthy_configs)} healthy configs found.")
     return healthy_configs
 
 async def background_external_updater():
@@ -512,7 +538,7 @@ async def background_external_updater():
             print(f"[CAT] External updater error: {e}")
 
 # =====================================================================
-# 🧪 چک سلامت کانفیگ‌های داخلی (چکر خودکار)
+# 🧪 توابع چک سلامت کانفیگ‌های داخلی (چکر خودکار)
 # =====================================================================
 async def background_config_checker():
     """چک کردن دوره‌ای سلامت کانفیگ‌های داخلی (به جز بنر با id=0)"""
@@ -553,73 +579,6 @@ async def background_config_checker():
                     await execute_db("UPDATE configs SET fail_count = 0 WHERE id = ?", cfg["id"])
         except Exception as e:
             print(f"[CAT] Config checker error: {e}")
-
-# =====================================================================
-# 🧪 یادآور انقضای اشتراک‌ها
-# =====================================================================
-async def background_expiration_notifier():
-    """ارسال یادآوری انقضای اشتراک به کاربران (۱ ساعت، ۲۴ ساعت، ۳ روز مانده)"""
-    while True:
-        await asyncio.sleep(15 * 60)  # هر ۱۵ دقیقه
-        try:
-            now = datetime.datetime.utcnow()
-            query = """
-                SELECT s.id as sub_id, s.token, s.expires_at, s.notified_level,
-                       u.telegram_id, u.balance
-                FROM subscriptions s
-                JOIN users u ON s.user_id = u.id
-                WHERE s.status = 'active'
-            """
-            res = await query_db(query)
-            subs = get_rows(res)
-
-            for sub in subs:
-                try:
-                    expires_at = datetime.datetime.strptime(sub["expires_at"], "%Y-%m-%d %H:%M:%S")
-                except Exception:
-                    continue
-
-                time_left = expires_at - now
-                time_left_sec = time_left.total_seconds()
-
-                if time_left_sec <= 0:
-                    continue
-
-                notified_level = sub.get("notified_level", 0)
-                tg_id = sub["telegram_id"]
-                sub_url = await build_sub_url_async(sub["token"])
-                msg = ""
-                new_level = notified_level
-
-                if time_left_sec <= 3600 and notified_level < 3:
-                    msg = (f"⚠️ **هشدار خیلی مهم** ⚠️\n\nفقط **۱ ساعت** تا پایان اعتبار سرویس شما باقی مانده است!\n\n"
-                           f"🔗 لینک سرویس: `{sub_url}`\n💰 موجودی کیف پول: {sub['balance']:,} تومان\n\n"
-                           f"جهت جلوگیری از قطعی اینترنت، سریعاً از طریق دکمه زیر تمدید کنید.")
-                    new_level = 3
-                elif time_left_sec <= 86400 and notified_level < 2:
-                    msg = (f"⏳ **یادآوری تمدید**\n\nسرویس شما **۲۴ ساعت** دیگر منقضی خواهد شد.\n\n"
-                           f"🔗 لینک سرویس: `{sub_url}`\n💰 موجودی کیف پول: {sub['balance']:,} تومان\n\n"
-                           f"لطفاً پیش از اتمام زمان، اکانت خود را شارژ و تمدید نمایید.")
-                    new_level = 2
-                elif time_left_sec <= 259200 and notified_level < 1:
-                    msg = (f"📅 **اطلاعیه سرویس**\n\nکاربر گرامی، تنها **۳ روز** تا پایان اشتراک شما باقی مانده است.\n\n"
-                           f"🔗 لینک سرویس: `{sub_url}`\n💰 موجودی کیف پول: {sub['balance']:,} تومان\n\n"
-                           f"می‌توانید با دعوت دوستان حساب خود را رایگان شارژ کنید یا تمدید نمایید.")
-                    new_level = 1
-
-                if msg:
-                    markup = {"inline_keyboard": [[{"text": "♻️ تمدید سریع سرویس", "callback_data": f"renew_sub_{sub['token']}"}]]}
-                    res_tg = await call_telegram("sendMessage", {
-                        "chat_id": int(tg_id),
-                        "text": msg,
-                        "parse_mode": "Markdown",
-                        "reply_markup": markup
-                    })
-                    if res_tg.get("ok"):
-                        await execute_db("UPDATE subscriptions SET notified_level = ? WHERE id = ?", new_level, sub["sub_id"])
-
-        except Exception as e:
-            print(f"[CAT] Notifier error: {e}")
 
 # ---------------------------------------------------------------------
 # 🧑‍💼 توابع کاربر و ادمین
