@@ -1,7 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-ربات مدیریت ساب‌لینک v3 – نسخه CAT Enhanced
-- اصلاحات: بنر قابل تغییر توسط ادمین، لاگینگ، پاکسازی خودکار، بازخوانی کش، تلاش مجدد، بهبود نمایش سرویس‌ها
+ربات مدیریت ساب‌لینک v2 – نسخه Railway + Cloudflare API
+- بازنویسی شده برای اجرای مستقل در پایتون استاندارد
+- اتصال به D1 و KV از طریق Cloudflare API
+- به‌روزرسانی: تنظیم تایتل اختصاصی ساب‌لینک، اصلاح دکمه پشتیبانی، تزریق کانفیگ نمایشی و سیستم یادآور انقضا
+
+اصلاحات نهایی (رفع قطعی مشکل بنر):
+- بنر به‌عنوان کانفیگ دائمی با id=0 در دیتابیس ذخیره می‌شود
+- کش KV شامل بنر + کانفیگ‌های دیگر است
+- چکر خودکار بنر را حذف نمی‌کند
+- حذف کاراکتر | از تایتل (فرمت: ⏳14روز👥3کاربره♾️نامحدود📆15روزه)
 """
 
 import os
@@ -15,20 +23,10 @@ import httpx
 import re
 import time
 import urllib.parse
-import secrets
+import random
 import string
-import logging
 from fastapi import FastAPI, Request, Response
 import uvicorn
-
-# ---------------------------------------------------------------------
-# 📋 تنظیمات لاگینگ
-# ---------------------------------------------------------------------
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger("CAT-BOT")
 
 # ---------------------------------------------------------------------
 # 🔐 متغیرهای محیطی (Environment Variables)
@@ -44,7 +42,7 @@ CF_KV_ID = os.getenv("CF_KV_ID", "")
 APP_BASE_URL = os.getenv("APP_BASE_URL", "https://technowvpnbot.ariyacompany-io.workers.dev")
 
 # 🔥 بنر دائمی – این لینک به‌عنوان کانفیگ با id=0 در دیتابیس ذخیره می‌شود
-DEFAULT_BANNER_CONFIG = "vless://1234@1.1.1.1:443?encryption=none&security=tls&sni=sertraline.adaspoloandco.com&fp=chrome&type=ws&host=sertraline.adaspoloandco.com&path=%2Fdownload.php#%F0%9F%8C%90%D9%87%D8%B1%20%D8%B1%D9%88%D8%B2%20%D9%84%DB%8C%D9%86%DA%A9%20%D8%AE%D9%88%D8%AF%20%D8%B1%D8%A7%20%D8%A2%D9%BE%D8%AF%DB%8C%D8%AA%20%DA%A9%D9%86%DB%8C%D8%AF%E2%9A%A1"
+BANNER_CONFIG = "vless://1234@1.1.1.1:443?encryption=none&security=tls&sni=sertraline.adaspoloandco.com&fp=chrome&type=ws&host=sertraline.adaspoloandco.com&path=%2Fdownload.php#%F0%9F%8C%90%D9%87%D8%B1%20%D8%B1%D9%88%D8%B2%20%D9%84%DB%8C%D9%86%DA%A9%20%D8%AE%D9%88%D8%AF%20%D8%B1%D8%A7%20%D8%A2%D9%BE%D8%AF%DB%8C%D8%AA%20%DA%A9%D9%86%DB%8C%D8%AF%E2%9A%A1"
 
 CF_HEADERS = {
     "Authorization": f"Bearer {CF_API_TOKEN}",
@@ -73,7 +71,7 @@ def del_local_cache(key):
     _local_cache.pop(key, None)
 
 # ---------------------------------------------------------------------
-# 📚 تمام متون فارسی در یک جا (با اضافه‌های جدید)
+# 📚 تمام متون فارسی در یک جا
 # ---------------------------------------------------------------------
 STRINGS = {
     "start_welcome": (
@@ -139,12 +137,10 @@ STRINGS = {
     "plan_list_item": "📌 نام: {name}\n💰 قیمت: {price:,} تومان\n📆 مدت: {duration} روز\n👥 لیمیت کاربر: {max_users}\n🟢 وضعیت: {status}",
     "choose_plan": "پلن مورد نظر را انتخاب کنید:\n\n « تمامی پلن های زیر حجم نامحدود هستند »",
     "purchase_cancelled": "❌ عملیات لغو شد.",
-    "banner_updated": "✅ بنر دائمی با موفقیت به‌روزرسانی شد.",
-    "cache_refreshed": "🔄 کش کانفیگ‌ها با موفقیت بازخوانی شد.",
 }
 
 # ---------------------------------------------------------------------
-# 🔧 توابع کمکی و API کلاودفلر (با تلاش مجدد)
+# 🔧 توابع کمکی و API کلاودفلر
 # ---------------------------------------------------------------------
 def safe_int(value, default=0):
     try:
@@ -164,24 +160,18 @@ def get_first_row(db_res):
     rows = get_rows(db_res)
     return rows[0] if rows else None
 
-async def query_db(sql, *args, retries=3):
-    """اجرای کوئری با تلاش مجدد در صورت خطای موقت"""
+async def query_db(sql, *args):
     url = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/d1/database/{CF_D1_ID}/query"
     payload = {"sql": sql, "params": list(args)}
-    for attempt in range(retries):
-        try:
-            res = await http_client.post(url, headers=CF_HEADERS, json=payload, timeout=10.0)
-            data = res.json()
-            if data.get("success") is False:
-                logger.error(f"D1 SQL Error: {data.get('errors')}")
-            return data
-        except Exception as e:
-            logger.warning(f"D1 API Error (attempt {attempt+1}/{retries}): {str(e)}")
-            if attempt == retries - 1:
-                logger.error(f"D1 API final failure: {str(e)}")
-                return {"success": False, "error": str(e)}
-            await asyncio.sleep(1 * (attempt + 1))
-    return {"success": False, "error": "Max retries exceeded"}
+    try:
+        res = await http_client.post(url, headers=CF_HEADERS, json=payload, timeout=10.0)
+        data = res.json()
+        if data.get("success") is False:
+            print(f"D1 SQL Error: {data.get('errors')}")
+        return data
+    except Exception as e:
+        print(f"D1 API Error: {str(e)}")
+        return {"success": False, "error": str(e)}
 
 async def execute_db(sql, *args):
     return await query_db(sql, *args)
@@ -195,7 +185,7 @@ async def call_telegram(method, payload):
         response = await http_client.post(url, json=payload, timeout=10.0)
         return response.json()
     except Exception as e:
-        logger.error(f"Telegram API error: {str(e)}")
+        print(f"Telegram API error: {str(e)}")
         return {"ok": False, "description": str(e)}
 
 async def edit_message(chat_id, message_id, text, reply_markup=None, parse_mode=None):
@@ -214,51 +204,64 @@ def get_back_markup(is_admin_user):
     return {"inline_keyboard": [[{"text": "🔙 بازگشت به منوی اصلی", "callback_data": "admin_return" if is_admin_user else "user_return"}]]}
 
 # ---------------------------------------------------------------------
-# ⚙️ مدیریت تنظیمات با کش KV کلادفلر (با تلاش مجدد)
+# ⚙️ مدیریت تنظیمات با کش KV کلادفلر
 # ---------------------------------------------------------------------
-async def get_kv(key, retries=3):
+async def get_kv(key):
     url = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/storage/kv/namespaces/{CF_KV_ID}/values/{key}"
-    for attempt in range(retries):
-        try:
-            r = await http_client.get(url, headers={"Authorization": f"Bearer {CF_API_TOKEN}"}, timeout=5.0)
-            if r.status_code == 200:
-                return r.text
-            else:
-                logger.warning(f"KV get error: status {r.status_code}, attempt {attempt+1}")
-        except Exception as e:
-            logger.warning(f"KV get exception: {str(e)}, attempt {attempt+1}")
-        await asyncio.sleep(0.5 * (attempt + 1))
+    try:
+        r = await http_client.get(url, headers={"Authorization": f"Bearer {CF_API_TOKEN}"}, timeout=5.0)
+        if r.status_code == 200:
+            return r.text
+    except Exception:
+        pass
     return None
 
-async def put_kv(key, value, expiration_ttl=None, retries=3):
+async def put_kv(key, value, expiration_ttl=None):
     url = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/storage/kv/namespaces/{CF_KV_ID}/values/{key}"
     params = {}
     if expiration_ttl:
         params['expiration_ttl'] = expiration_ttl
-    for attempt in range(retries):
-        try:
-            await http_client.put(
-                url,
-                headers={"Authorization": f"Bearer {CF_API_TOKEN}"},
-                params=params,
-                content=str(value),
-                timeout=5.0
-            )
-            return
-        except Exception as e:
-            logger.warning(f"KV put error: {str(e)}, attempt {attempt+1}")
-            await asyncio.sleep(0.5 * (attempt + 1))
-    logger.error(f"KV put failed after {retries} attempts")
+    try:
+        await http_client.put(
+            url,
+            headers={"Authorization": f"Bearer {CF_API_TOKEN}"},
+            params=params,
+            content=str(value),
+            timeout=5.0
+        )
+    except Exception:
+        pass
 
-async def delete_kv(key, retries=3):
+async def delete_kv(key):
     url = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/storage/kv/namespaces/{CF_KV_ID}/values/{key}"
-    for attempt in range(retries):
-        try:
-            await http_client.delete(url, headers={"Authorization": f"Bearer {CF_API_TOKEN}"}, timeout=5.0)
-            return
-        except Exception as e:
-            logger.warning(f"KV delete error: {str(e)}, attempt {attempt+1}")
-            await asyncio.sleep(0.5 * (attempt + 1))
+    try:
+        await http_client.delete(url, headers={"Authorization": f"Bearer {CF_API_TOKEN}"}, timeout=5.0)
+    except Exception:
+        pass
+
+async def get_setting(key, default=None):
+    cached = get_local_cache(f"setting_{key}")
+    if cached is not None:
+        return cached
+
+    cached_kv = await get_kv(f"setting_{key}")
+    if cached_kv is not None:
+        set_local_cache(f"setting_{key}", cached_kv, 600)
+        return cached_kv
+
+    res = await query_db("SELECT value FROM settings WHERE key = ?", key)
+    row = get_first_row(res)
+    if row:
+        value = row["value"]
+        await put_kv(f"setting_{key}", value, expiration_ttl=600)
+        set_local_cache(f"setting_{key}", value, 600)
+        return value
+    return default
+
+async def set_setting(key, value):
+    await execute_db("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", key, str(value))
+    await put_kv(f"setting_{key}", str(value), expiration_ttl=600)
+    set_local_cache(f"setting_{key}", str(value), 600)
 
 # ---------------------------------------------------------------------
 # ✅ بهبود نمایش نام کانال‌های اجباری
@@ -330,8 +333,8 @@ async def format_config_name(config_text):
     except:
         pass
 
-    rand_letter = secrets.choice(string.ascii_lowercase)
-    rand_digits = f"{secrets.randbelow(100):02d}"
+    rand_letter = random.choice(string.ascii_lowercase)
+    rand_digits = f"{random.randint(0, 99):02d}"
     rand_code = f"{rand_letter}{rand_digits}"
 
     new_name = f"{country_str} | @TechNowVpn | {rand_code}"
@@ -350,15 +353,16 @@ async def format_config_name(config_text):
     return config_text
 
 async def init_database_if_needed():
-    initialized = await get_kv("db_initialized_v3_cat")
+    initialized = await get_kv("db_initialized_v2_4")  # نسخه جدید برای اضافه کردن بنر
     await execute_db("ALTER TABLE subscriptions ADD COLUMN notified_level INTEGER DEFAULT 0")
 
+    # 🔥 اضافه کردن بنر به‌عنوان کانفیگ دائمی با id=0 (اگر وجود نداشت)
     banner_exists = await query_db("SELECT id FROM configs WHERE id = 0")
     if not get_first_row(banner_exists):
-        await execute_db("INSERT INTO configs (id, config_text, is_active, fail_count) VALUES (0, ?, 1, 0)", DEFAULT_BANNER_CONFIG)
-        logger.info("Banner config created with id=0")
+        await execute_db("INSERT INTO configs (id, config_text, is_active, fail_count) VALUES (0, ?, 1, 0)", BANNER_CONFIG)
     else:
-        await execute_db("UPDATE configs SET is_active = 1, config_text = ? WHERE id = 0", DEFAULT_BANNER_CONFIG)
+        # اطمینان از اینکه بنر همیشه active باشد
+        await execute_db("UPDATE configs SET is_active = 1, config_text = ? WHERE id = 0", BANNER_CONFIG)
 
     if initialized == "true":
         return
@@ -422,23 +426,14 @@ async def init_database_if_needed():
         if not get_first_row(res):
             await execute_db("INSERT INTO settings (key, value) VALUES (?, ?)", key, val)
 
-    await put_kv("db_initialized_v3_cat", "true")
-    logger.info("Database initialized with v3 schema")
+    await put_kv("db_initialized_v2_4", "true")
 
-async def update_banner_config(new_config: str):
-    await execute_db("UPDATE configs SET config_text = ?, is_active = 1, fail_count = 0 WHERE id = 0", new_config)
-    await delete_kv("configs_payload")
-    logger.info("Banner config updated")
-
-async def refresh_configs_cache():
-    await delete_kv("configs_payload")
-    logger.info("Configs cache refreshed manually")
-
+# چکر خودکار کانفیگ‌ها (۳۰ دقیقه) – بنر با id=0 را حذف نمی‌کند
 async def background_config_checker():
     while True:
         await asyncio.sleep(30 * 60)
         try:
-            res = await query_db("SELECT * FROM configs WHERE is_active = 1 AND id != 0")
+            res = await query_db("SELECT * FROM configs WHERE is_active = 1 AND id != 0")  # بنر را نادیده بگیر
             configs = get_rows(res)
             for cfg in configs:
                 is_healthy = False
@@ -466,6 +461,7 @@ async def background_config_checker():
                     fail_count = cfg.get("fail_count", 0) + 1
                     if fail_count >= 3:
                         await execute_db("DELETE FROM configs WHERE id = ?", cfg["id"])
+                        # حذف کش کانفیگ‌ها بعد از تغییر
                         await delete_kv("configs_payload")
                         if ADMIN_IDS:
                             admins = [x.strip() for x in str(ADMIN_IDS).split(",") if x.strip()]
@@ -475,26 +471,14 @@ async def background_config_checker():
                                     "text": f"⚠️ کانفیگ زیر به دلیل 3 بار عدم اتصال متوالی حذف گردید:\n\n`{cfg['config_text']}`",
                                     "parse_mode": "Markdown"
                                 })
-                        logger.info(f"Config {cfg['id']} removed due to health failures")
                     else:
                         await execute_db("UPDATE configs SET fail_count = ? WHERE id = ?", fail_count, cfg["id"])
                 else:
                     await execute_db("UPDATE configs SET fail_count = 0 WHERE id = ?", cfg["id"])
         except Exception as e:
-            logger.error(f"Checker error: {e}")
+            print(f"Checker error: {e}")
 
-async def background_clean_expired_subs():
-    while True:
-        await asyncio.sleep(6 * 3600)
-        try:
-            now = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-            await execute_db("UPDATE subscriptions SET status = 'expired' WHERE expires_at < ? AND status = 'active'", now)
-            cutoff = (datetime.datetime.utcnow() - datetime.timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
-            await execute_db("DELETE FROM subscriptions WHERE expires_at < ? AND status = 'expired'", cutoff)
-            logger.info("Expired subscriptions cleaned up")
-        except Exception as e:
-            logger.error(f"Cleanup error: {e}")
-
+# سیستم هشداردهنده تایمر انقضا (۱۵ دقیقه)
 async def background_expiration_notifier():
     while True:
         await asyncio.sleep(15 * 60)
@@ -556,8 +540,11 @@ async def background_expiration_notifier():
                         await execute_db("UPDATE subscriptions SET notified_level = ? WHERE id = ?", new_level, sub["sub_id"])
 
         except Exception as e:
-            logger.error(f"Notifier error: {e}")
+            print(f"Notifier error: {e}")
 
+# ---------------------------------------------------------------------
+# 🧑‍💼 توابع کاربر و ادمین
+# ---------------------------------------------------------------------
 def is_admin(telegram_id, user_data=None):
     if not ADMIN_IDS:
         return False
@@ -639,6 +626,9 @@ async def check_channel_membership(telegram_id, force_refresh=False):
     set_local_cache(cache_key, True, 20)
     return True
 
+# =====================================================================
+# 🔥 تابع تولید لینک با تایتل بدون |
+# =====================================================================
 async def build_sub_url_async(token: str) -> str:
     cache_key = f"sub_url_{token}"
     cached = get_local_cache(cache_key)
@@ -690,6 +680,9 @@ async def build_sub_url_async(token: str) -> str:
 
     return full_url
 
+# ---------------------------------------------------------------------
+# 📋 کیبوردهای اینلاین
+# ---------------------------------------------------------------------
 async def get_user_inline_keyboard(is_actual_admin=False):
     kb = [
         [{"text": "🛒 خرید سرویس", "callback_data": "buy_service"}, {"text": "🎁 تست رایگان", "callback_data": "free_trial"}],
@@ -713,7 +706,6 @@ def get_admin_inline_keyboard():
         "inline_keyboard": [
             [{"text": "📦 مدیریت پلن‌ها", "callback_data": "adm_manage_plans"}, {"text": "👤 مدیریت کاربران", "callback_data": "adm_manage_users_1"}],
             [{"text": "📋 مدیریت کانفیگ‌ها", "callback_data": "adm_manage_configs"}, {"text": "➕ افزودن کانفیگ", "callback_data": "adm_add_config"}],
-            [{"text": "🔄 بازخوانی کش کانفیگ", "callback_data": "adm_refresh_cache"}, {"text": "🖼 تغییر بنر", "callback_data": "adm_update_banner"}],
             [{"text": "⚙️ تنظیمات", "callback_data": "adm_settings"}, {"text": "📢 ارسال همگانی", "callback_data": "adm_broadcast"}],
             [{"text": "👤 نمای کاربری", "callback_data": "adm_test_user"}]
         ]
@@ -726,6 +718,9 @@ def get_plans_inline_keyboard(plans, is_admin_user):
     kb.append([{"text": "🔙 بازگشت به منوی اصلی", "callback_data": "admin_return" if is_admin_user else "user_return"}])
     return {"inline_keyboard": kb}
 
+# ---------------------------------------------------------------------
+# 🧠 توابع اصلی
+# ---------------------------------------------------------------------
 async def send_membership_requirement(chat_id, message_id=None):
     force_channels = await get_setting("force_channels", "")
     if not force_channels:
@@ -777,11 +772,14 @@ async def credit_referrer_if_pending(user, chat_id):
         await execute_db("UPDATE users SET referred_by = ? WHERE id = ?", new_ref_status, user["id"])
         user["referred_by"] = new_ref_status
 
+# ---------------------------------------------------------------------
+# 🧩 هندلرهای کاربر
+# ---------------------------------------------------------------------
 async def handle_free_trial(user, chat_id, message_id, is_admin_user):
     if user.get("has_used_trial"):
         await edit_message(chat_id, message_id, STRINGS["trial_already_used"], reply_markup=get_back_markup(is_admin_user))
         return
-    token = secrets.token_hex(16)
+    token = uuid.uuid4().hex
     expires_at = (datetime.datetime.utcnow() + datetime.timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
     await execute_db("INSERT INTO subscriptions (user_id, token, expires_at) VALUES (?, ?, ?)", user["id"], token, expires_at)
     await execute_db("UPDATE users SET has_used_trial = 1 WHERE id = ?", user["id"])
@@ -903,11 +901,14 @@ async def create_subscription_from_plan(plan_id, user_id):
     plan = get_first_row(res)
     if not plan:
         return None
-    token = secrets.token_hex(16)
+    token = uuid.uuid4().hex
     expires_at = (datetime.datetime.utcnow() + datetime.timedelta(days=plan["duration_days"])).strftime("%Y-%m-%d %H:%M:%S")
     await execute_db("INSERT INTO subscriptions (user_id, plan_id, token, expires_at) VALUES (?, ?, ?, ?)", user_id, plan_id, token, expires_at)
     return token
 
+# ---------------------------------------------------------------------
+# 💬 مدیریت state ها
+# ---------------------------------------------------------------------
 async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_admin):
     text = message.get("text", "").strip()
 
@@ -922,20 +923,10 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
         return True
 
     if is_admin_user:
-        if state == "waiting_for_banner_update":
-            await update_banner_config(text)
-            await execute_db("UPDATE users SET state = NULL WHERE id = ?", user["id"])
-            markup = {"inline_keyboard": [[{"text": "🔙 بازگشت به منوی اصلی", "callback_data": "admin_return"}]]}
-            await call_telegram("sendMessage", {
-                "chat_id": chat_id,
-                "text": STRINGS["banner_updated"],
-                "reply_markup": markup
-            })
-            return True
-
         if state == "waiting_for_config":
             formatted_cfg = await format_config_name(text)
             await execute_db("INSERT INTO configs (config_text) VALUES (?)", formatted_cfg)
+            # حذف کش کانفیگ‌ها بعد از افزودن کانفیگ جدید
             await delete_kv("configs_payload")
             markup = {"inline_keyboard": [[{"text": "🔙 بازگشت به منوی اصلی", "callback_data": "admin_return"}]]}
             await call_telegram("sendMessage", {
@@ -1143,6 +1134,9 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
 
     return False
 
+# ---------------------------------------------------------------------
+# 📞 پردازش Callback
+# ---------------------------------------------------------------------
 async def process_callback(callback):
     cq_id = callback["id"]
     message = callback.get("message", {})
@@ -1414,21 +1408,11 @@ async def process_callback(callback):
         await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": STRINGS["admin_only"], "show_alert": True})
         return
 
+    # ---- بقیه بخش‌های ادمین ----
     if data == "adm_test_user":
         await execute_db("UPDATE users SET is_test_mode = 1 WHERE id = ?", user["id"])
         markup = await get_user_inline_keyboard(actual_is_admin)
         await edit_message(chat_id, message_id, "شما اکنون در نمای کاربری هستید. برای بازگشت دکمه مربوطه را بزنید.", reply_markup=markup)
-        return
-
-    if data == "adm_refresh_cache":
-        await refresh_configs_cache()
-        await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "✅ کش بازخوانی شد!"})
-        await edit_message(chat_id, message_id, STRINGS["cache_refreshed"], reply_markup=get_admin_inline_keyboard())
-        return
-
-    if data == "adm_update_banner":
-        await execute_db("UPDATE users SET state = 'waiting_for_banner_update' WHERE id = ?", user["id"])
-        await edit_message(chat_id, message_id, "📥 لطفاً کانفیگ جدید بنر را ارسال کنید (این کانفیگ به‌عنوان id=0 ذخیره می‌شود):", reply_markup={"inline_keyboard": [[{"text": "🔙 بازگشت به منوی اصلی", "callback_data": "admin_return"}]]})
         return
 
     if data == "adm_add_config":
@@ -1707,6 +1691,9 @@ async def show_admin_panel(chat_id):
         "reply_markup": get_admin_inline_keyboard()
     })
 
+# ---------------------------------------------------------------------
+# 📨 پردازش پیام
+# ---------------------------------------------------------------------
 async def process_message(message):
     chat_id = message["chat"]["id"]
     text = message.get("text", "").strip()
@@ -1799,9 +1786,12 @@ async def process_update(update):
         elif "callback_query" in update:
             await process_callback(update["callback_query"])
     except Exception:
-        logger.error("Error in process_update:")
+        print("Error in process_update:")
         traceback.print_exc()
 
+# ---------------------------------------------------------------------
+# 🚀 سرور FastAPI
+# ---------------------------------------------------------------------
 app = FastAPI()
 
 @app.on_event("startup")
@@ -1811,8 +1801,7 @@ async def startup_event():
     await init_database_if_needed()
     asyncio.create_task(background_config_checker())
     asyncio.create_task(background_expiration_notifier())
-    asyncio.create_task(background_clean_expired_subs())
-    logger.info("🚀 Bot Server Started! (CAT Enhanced v3)")
+    print("🚀 Bot Server Started! (Banner is now a permanent config in DB)")
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -1847,6 +1836,7 @@ async def handle_sublink(token: str):
         await execute_db("UPDATE subscriptions SET status = 'expired' WHERE id = ?", sub["id"])
         return Response(content="", media_type="text/plain")
 
+    # ---- تایتل بدون | ----
     days_left = (expires_at - now).days
     days_left_str = f"{days_left}روز" if days_left >= 0 else "منقضی"
     plan_id = sub.get("plan_id")
@@ -1862,6 +1852,7 @@ async def handle_sublink(token: str):
     else:
         plan_title = f"⏳{days_left_str}👤۱کاربره♾️نامحدود🎁تست۱روزه"
 
+    # ---- کش ۵ دقیقه‌ای شامل بنر + کانفیگ‌ها (id=0 بنر است) ----
     cache_key = "configs_payload"
     cached_payload = await get_kv(cache_key)
     if cached_payload is None:
@@ -1870,11 +1861,9 @@ async def handle_sublink(token: str):
         payload_lines = [c["config_text"].strip() for c in confs if c["config_text"].strip()]
         combined = "\n".join(payload_lines)
         cached_payload = base64.b64encode(combined.encode('utf-8')).decode('utf-8')
-        await put_kv(cache_key, cached_payload, expiration_ttl=300)
+        await put_kv(cache_key, cached_payload, expiration_ttl=300)  # ۵ دقیقه
 
-    # =============================================================
-    # 🚨 این دو خط اصلی‌ترین جاهایی هستن که باید درست باشن
-    # =============================================================
+    # ---- هدرها ----
     title_b64 = base64.b64encode(plan_title.encode('utf-8')).decode('utf-8')
     safe_title = urllib.parse.quote(plan_title)
 
