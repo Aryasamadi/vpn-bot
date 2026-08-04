@@ -180,7 +180,7 @@ async def query_db(sql, *args, retries=3):
             if attempt == retries - 1:
                 logger.error(f"D1 API final failure: {str(e)}")
                 return {"success": False, "error": str(e)}
-            await asyncio.sleep(1 * (attempt + 1))  # backoff
+            await asyncio.sleep(1 * (attempt + 1))
     return {"success": False, "error": "Max retries exceeded"}
 
 async def execute_db(sql, *args):
@@ -330,8 +330,8 @@ async def format_config_name(config_text):
     except:
         pass
 
-    rand_letter = secrets.choice(string.ascii_lowercase)  # 🆕 استفاده از secrets
-    rand_digits = f"{secrets.randbelow(100):02d}"        # 🆕
+    rand_letter = secrets.choice(string.ascii_lowercase)
+    rand_digits = f"{secrets.randbelow(100):02d}"
     rand_code = f"{rand_letter}{rand_digits}"
 
     new_name = f"{country_str} | @TechNowVpn | {rand_code}"
@@ -350,16 +350,14 @@ async def format_config_name(config_text):
     return config_text
 
 async def init_database_if_needed():
-    initialized = await get_kv("db_initialized_v3_cat")  # نسخه جدید
-    await execute_db("ALTER TABLE subscriptions ADD COLUMN notified_level INTEGER DEFAULT 0")  # ایمن
+    initialized = await get_kv("db_initialized_v3_cat")
+    await execute_db("ALTER TABLE subscriptions ADD COLUMN notified_level INTEGER DEFAULT 0")
 
-    # 🔥 اضافه کردن بنر به‌عنوان کانفیگ دائمی با id=0 (اگر وجود نداشت)
     banner_exists = await query_db("SELECT id FROM configs WHERE id = 0")
     if not get_first_row(banner_exists):
         await execute_db("INSERT INTO configs (id, config_text, is_active, fail_count) VALUES (0, ?, 1, 0)", DEFAULT_BANNER_CONFIG)
         logger.info("Banner config created with id=0")
     else:
-        # اطمینان از اینکه بنر همیشه active باشد و متن آن به‌روز باشد (اگر تغییر کرده)
         await execute_db("UPDATE configs SET is_active = 1, config_text = ? WHERE id = 0", DEFAULT_BANNER_CONFIG)
 
     if initialized == "true":
@@ -427,26 +425,15 @@ async def init_database_if_needed():
     await put_kv("db_initialized_v3_cat", "true")
     logger.info("Database initialized with v3 schema")
 
-# ---------------------------------------------------------------------
-# 🆕 تابع به‌روزرسانی بنر
-# ---------------------------------------------------------------------
 async def update_banner_config(new_config: str):
-    """به‌روزرسانی کانفیگ بنر (id=0) و پاک کردن کش"""
     await execute_db("UPDATE configs SET config_text = ?, is_active = 1, fail_count = 0 WHERE id = 0", new_config)
-    await delete_kv("configs_payload")  # پاک کردن کش
+    await delete_kv("configs_payload")
     logger.info("Banner config updated")
 
-# ---------------------------------------------------------------------
-# 🆕 تابع بازخوانی کش کانفیگ‌ها
-# ---------------------------------------------------------------------
 async def refresh_configs_cache():
-    """بازخوانی کش کانفیگ‌ها (برای استفاده ادمین)"""
     await delete_kv("configs_payload")
     logger.info("Configs cache refreshed manually")
 
-# ---------------------------------------------------------------------
-# چکر خودکار کانفیگ‌ها (۳۰ دقیقه) – بنر با id=0 را حذف نمی‌کند
-# ---------------------------------------------------------------------
 async def background_config_checker():
     while True:
         await asyncio.sleep(30 * 60)
@@ -479,7 +466,7 @@ async def background_config_checker():
                     fail_count = cfg.get("fail_count", 0) + 1
                     if fail_count >= 3:
                         await execute_db("DELETE FROM configs WHERE id = ?", cfg["id"])
-                        await delete_kv("configs_payload")  # پاک کردن کش
+                        await delete_kv("configs_payload")
                         if ADMIN_IDS:
                             admins = [x.strip() for x in str(ADMIN_IDS).split(",") if x.strip()]
                             for admin_id in admins:
@@ -496,26 +483,18 @@ async def background_config_checker():
         except Exception as e:
             logger.error(f"Checker error: {e}")
 
-# ---------------------------------------------------------------------
-# 🆕 تسک پاکسازی خودکار اشتراک‌های منقضی (هر ۶ ساعت)
-# ---------------------------------------------------------------------
 async def background_clean_expired_subs():
     while True:
-        await asyncio.sleep(6 * 3600)  # هر ۶ ساعت
+        await asyncio.sleep(6 * 3600)
         try:
             now = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-            # ابتدا وضعیت اشتراک‌های منقضی را به 'expired' تغییر می‌دهیم
             await execute_db("UPDATE subscriptions SET status = 'expired' WHERE expires_at < ? AND status = 'active'", now)
-            # سپس اشتراک‌هایی که بیش از ۲۴ ساعت از انقضایشان گذشته را حذف می‌کنیم (برای کاهش حجم)
             cutoff = (datetime.datetime.utcnow() - datetime.timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
             await execute_db("DELETE FROM subscriptions WHERE expires_at < ? AND status = 'expired'", cutoff)
             logger.info("Expired subscriptions cleaned up")
         except Exception as e:
             logger.error(f"Cleanup error: {e}")
 
-# ---------------------------------------------------------------------
-# سیستم هشداردهنده تایمر انقضا (۱۵ دقیقه)
-# ---------------------------------------------------------------------
 async def background_expiration_notifier():
     while True:
         await asyncio.sleep(15 * 60)
@@ -579,9 +558,6 @@ async def background_expiration_notifier():
         except Exception as e:
             logger.error(f"Notifier error: {e}")
 
-# ---------------------------------------------------------------------
-# 🧑‍💼 توابع کاربر و ادمین
-# ---------------------------------------------------------------------
 def is_admin(telegram_id, user_data=None):
     if not ADMIN_IDS:
         return False
@@ -663,9 +639,6 @@ async def check_channel_membership(telegram_id, force_refresh=False):
     set_local_cache(cache_key, True, 20)
     return True
 
-# =====================================================================
-# 🔥 تابع تولید لینک با تایتل بدون |
-# =====================================================================
 async def build_sub_url_async(token: str) -> str:
     cache_key = f"sub_url_{token}"
     cached = get_local_cache(cache_key)
@@ -717,9 +690,6 @@ async def build_sub_url_async(token: str) -> str:
 
     return full_url
 
-# ---------------------------------------------------------------------
-# 📋 کیبوردهای اینلاین (با دکمه جدید مدیریت بنر)
-# ---------------------------------------------------------------------
 async def get_user_inline_keyboard(is_actual_admin=False):
     kb = [
         [{"text": "🛒 خرید سرویس", "callback_data": "buy_service"}, {"text": "🎁 تست رایگان", "callback_data": "free_trial"}],
@@ -756,9 +726,6 @@ def get_plans_inline_keyboard(plans, is_admin_user):
     kb.append([{"text": "🔙 بازگشت به منوی اصلی", "callback_data": "admin_return" if is_admin_user else "user_return"}])
     return {"inline_keyboard": kb}
 
-# ---------------------------------------------------------------------
-# 🧠 توابع اصلی
-# ---------------------------------------------------------------------
 async def send_membership_requirement(chat_id, message_id=None):
     force_channels = await get_setting("force_channels", "")
     if not force_channels:
@@ -810,14 +777,11 @@ async def credit_referrer_if_pending(user, chat_id):
         await execute_db("UPDATE users SET referred_by = ? WHERE id = ?", new_ref_status, user["id"])
         user["referred_by"] = new_ref_status
 
-# ---------------------------------------------------------------------
-# 🧩 هندلرهای کاربر
-# ---------------------------------------------------------------------
 async def handle_free_trial(user, chat_id, message_id, is_admin_user):
     if user.get("has_used_trial"):
         await edit_message(chat_id, message_id, STRINGS["trial_already_used"], reply_markup=get_back_markup(is_admin_user))
         return
-    token = secrets.token_hex(16)  # 🆕 استفاده از secrets
+    token = secrets.token_hex(16)
     expires_at = (datetime.datetime.utcnow() + datetime.timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
     await execute_db("INSERT INTO subscriptions (user_id, token, expires_at) VALUES (?, ?, ?)", user["id"], token, expires_at)
     await execute_db("UPDATE users SET has_used_trial = 1 WHERE id = ?", user["id"])
@@ -863,8 +827,6 @@ async def handle_my_services(user, chat_id, message_id, is_admin_user):
         await edit_message(chat_id, message_id, STRINGS["no_active_services"], reply_markup=get_back_markup(is_admin_user))
         return
 
-    # 🆕 اگر تعداد سرویس‌ها زیاد باشد، صفحه‌بندی می‌کنیم
-    # برای سادگی، فعلاً مانند قبل
     await edit_message(chat_id, message_id, STRINGS["services_list"].format(count=len(subs)))
     for s in subs:
         sub_url = await build_sub_url_async(s["token"])
@@ -941,14 +903,11 @@ async def create_subscription_from_plan(plan_id, user_id):
     plan = get_first_row(res)
     if not plan:
         return None
-    token = secrets.token_hex(16)  # 🆕
+    token = secrets.token_hex(16)
     expires_at = (datetime.datetime.utcnow() + datetime.timedelta(days=plan["duration_days"])).strftime("%Y-%m-%d %H:%M:%S")
     await execute_db("INSERT INTO subscriptions (user_id, plan_id, token, expires_at) VALUES (?, ?, ?, ?)", user_id, plan_id, token, expires_at)
     return token
 
-# ---------------------------------------------------------------------
-# 💬 مدیریت state ها
-# ---------------------------------------------------------------------
 async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_admin):
     text = message.get("text", "").strip()
 
@@ -963,7 +922,6 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
         return True
 
     if is_admin_user:
-        # 🆕 state برای تغییر بنر
         if state == "waiting_for_banner_update":
             await update_banner_config(text)
             await execute_db("UPDATE users SET state = NULL WHERE id = ?", user["id"])
@@ -1185,9 +1143,6 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
 
     return False
 
-# ---------------------------------------------------------------------
-# 📞 پردازش Callback
-# ---------------------------------------------------------------------
 async def process_callback(callback):
     cq_id = callback["id"]
     message = callback.get("message", {})
@@ -1459,21 +1414,18 @@ async def process_callback(callback):
         await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": STRINGS["admin_only"], "show_alert": True})
         return
 
-    # ---- بقیه بخش‌های ادمین ----
     if data == "adm_test_user":
         await execute_db("UPDATE users SET is_test_mode = 1 WHERE id = ?", user["id"])
         markup = await get_user_inline_keyboard(actual_is_admin)
         await edit_message(chat_id, message_id, "شما اکنون در نمای کاربری (تست) هستید. برای بازگشت دکمه مربوطه را بزنید.", reply_markup=markup)
         return
 
-    # 🆕 بازخوانی کش
     if data == "adm_refresh_cache":
         await refresh_configs_cache()
         await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "✅ کش بازخوانی شد!"})
         await edit_message(chat_id, message_id, STRINGS["cache_refreshed"], reply_markup=get_admin_inline_keyboard())
         return
 
-    # 🆕 تغییر بنر
     if data == "adm_update_banner":
         await execute_db("UPDATE users SET state = 'waiting_for_banner_update' WHERE id = ?", user["id"])
         await edit_message(chat_id, message_id, "📥 لطفاً کانفیگ جدید بنر را ارسال کنید (این کانفیگ به‌عنوان id=0 ذخیره می‌شود):", reply_markup={"inline_keyboard": [[{"text": "🔙 بازگشت به منوی اصلی", "callback_data": "admin_return"}]]})
@@ -1755,9 +1707,6 @@ async def show_admin_panel(chat_id):
         "reply_markup": get_admin_inline_keyboard()
     })
 
-# ---------------------------------------------------------------------
-# 📨 پردازش پیام
-# ---------------------------------------------------------------------
 async def process_message(message):
     chat_id = message["chat"]["id"]
     text = message.get("text", "").strip()
@@ -1853,9 +1802,6 @@ async def process_update(update):
         logger.error("Error in process_update:")
         traceback.print_exc()
 
-# ---------------------------------------------------------------------
-# 🚀 سرور FastAPI
-# ---------------------------------------------------------------------
 app = FastAPI()
 
 @app.on_event("startup")
@@ -1865,7 +1811,7 @@ async def startup_event():
     await init_database_if_needed()
     asyncio.create_task(background_config_checker())
     asyncio.create_task(background_expiration_notifier())
-    asyncio.create_task(background_clean_expired_subs())  # 🆕 تسک پاکسازی
+    asyncio.create_task(background_clean_expired_subs())
     logger.info("🚀 Bot Server Started! (CAT Enhanced v3)")
 
 @app.on_event("shutdown")
@@ -1901,7 +1847,6 @@ async def handle_sublink(token: str):
         await execute_db("UPDATE subscriptions SET status = 'expired' WHERE id = ?", sub["id"])
         return Response(content="", media_type="text/plain")
 
-    # ---- تایتل بدون | ----
     days_left = (expires_at - now).days
     days_left_str = f"{days_left}روز" if days_left >= 0 else "منقضی"
     plan_id = sub.get("plan_id")
@@ -1917,7 +1862,6 @@ async def handle_sublink(token: str):
     else:
         plan_title = f"⏳{days_left_str}👤۱کاربره♾️نامحدود🎁تست۱روزه"
 
-    # ---- کش ۵ دقیقه‌ای شامل بنر + کانفیگ‌ها (id=0 بنر است) ----
     cache_key = "configs_payload"
     cached_payload = await get_kv(cache_key)
     if cached_payload is None:
@@ -1928,7 +1872,9 @@ async def handle_sublink(token: str):
         cached_payload = base64.b64encode(combined.encode('utf-8')).decode('utf-8')
         await put_kv(cache_key, cached_payload, expiration_ttl=300)
 
-    # ---- هدرها ----
+    # =============================================================
+    # 🚨 این دو خط اصلی‌ترین جاهایی هستن که باید درست باشن
+    # =============================================================
     title_b64 = base64.b64encode(plan_title.encode('utf-8')).decode('utf-8')
     safe_title = urllib.parse.quote(plan_title)
 
