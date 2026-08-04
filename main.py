@@ -1,7 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-ربات مدیریت ساب‌لینک v3 – نسخه CAT Enhanced
-- اصلاحات درخواستی: تکرار کانفیگ، مدیریت کانفیگ با صفحه‌بندی، مدیریت پلن‌ها (ویرایش و حذف با تایید)، پشتیبانی از مارک‌داون در محتوای راهنما و دکمه داینامیک، بهینه‌سازی سرعت
+ربات مدیریت ساب‌لینک v3 – نسخه CAT Enhanced (Final)
+- رفع باگ دکمه افزودن پلن
+- اضافه شدن جستجوی کانفیگ با حذف فوری (بدون تایید)
+- بهینه‌سازی کش محلی و کاهش درخواست‌های اضافی
+- پشتیبانی کامل از مارک‌داون در راهنما و دکمه داینامیک
 """
 
 import os
@@ -739,7 +742,7 @@ def get_admin_inline_keyboard():
     return {
         "inline_keyboard": [
             [{"text": "📦 مدیریت پلن‌ها", "callback_data": "adm_manage_plans"}, {"text": "👤 مدیریت کاربران", "callback_data": "adm_manage_users_1"}],
-            [{"text": "📋 مدیریت کانفیگ‌ها", "callback_data": "adm_manage_configs"}],  # حذف دکمه جداگانه افزودن
+            [{"text": "📋 مدیریت کانفیگ‌ها", "callback_data": "adm_manage_configs"}],
             [{"text": "⚙️ تنظیمات", "callback_data": "adm_settings"}, {"text": "📢 ارسال همگانی", "callback_data": "adm_broadcast"}],
             [{"text": "👤 نمای کاربری (تست)", "callback_data": "adm_test_user"}]
         ]
@@ -957,12 +960,37 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
         return True
 
     if is_admin_user:
+        # ---------- جستجوی کانفیگ (جدید) ----------
+        if state == "waiting_for_config_search":
+            search_text = text.strip()
+            if not search_text:
+                await call_telegram("sendMessage", {"chat_id": chat_id, "text": "❌ لطفاً متن معتبری ارسال کنید."})
+                return True
+            # جستجو با LIKE (می‌توانید به exact تغییر دهید)
+            res = await query_db("SELECT id, config_text FROM configs WHERE config_text LIKE ?", f"%{search_text}%")
+            configs = get_rows(res)
+            if not configs:
+                await call_telegram("sendMessage", {"chat_id": chat_id, "text": "❌ کانفیگی با این مشخصات یافت نشد."})
+                await execute_db("UPDATE users SET state = NULL WHERE id = ?", user["id"])
+                markup = {"inline_keyboard": [[{"text": "🔙 بازگشت به مدیریت کانفیگ", "callback_data": "adm_manage_configs"}]]}
+                await call_telegram("sendMessage", {"chat_id": chat_id, "text": "کانفیگ مورد نظر یافت نشد.", "reply_markup": markup})
+                return True
+
+            await execute_db("UPDATE users SET state = NULL WHERE id = ?", user["id"])
+            txt = "✅ کانفیگ‌های یافت شده:\n\n"
+            kb = []
+            for cfg in configs:
+                txt += f"🆔 {cfg['id']}\n`{cfg['config_text'][:100]}...`\n\n"
+                if cfg['id'] != 0:
+                    kb.append([{"text": f"🗑 حذف فوری کانفیگ {cfg['id']}", "callback_data": f"adm_cfg_del_immediate_{cfg['id']}"}])
+            kb.append([{"text": "🔙 بازگشت به مدیریت کانفیگ", "callback_data": "adm_manage_configs"}])
+            await call_telegram("sendMessage", {"chat_id": chat_id, "text": txt, "parse_mode": "Markdown", "reply_markup": {"inline_keyboard": kb}})
+            return True
+
         # ---------- افزودن کانفیگ با بررسی تکراری ----------
         if state == "waiting_for_config":
-            # بررسی تکراری بودن
             existing = await query_db("SELECT id FROM configs WHERE config_text = ?", text)
             if get_first_row(existing):
-                # تکراری است: ذخیره موقت و نمایش گزینه‌ها
                 await execute_db("UPDATE users SET plan_data = ? WHERE id = ?", json.dumps({"config_text": text, "action": "add"}), user["id"])
                 await execute_db("UPDATE users SET state = 'waiting_for_dup_decision' WHERE id = ?", user["id"])
                 markup = {"inline_keyboard": [
@@ -976,7 +1004,6 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
                 })
                 return True
             else:
-                # تکراری نیست، مستقیماً ثبت کن
                 formatted_cfg = await format_config_name(text)
                 await execute_db("INSERT INTO configs (config_text) VALUES (?)", formatted_cfg)
                 await delete_kv("configs_payload")
@@ -992,8 +1019,6 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
         # ---------- ویرایش پلن ----------
         if state.startswith("waiting_plan_edit_"):
             plan_id = state.replace("waiting_plan_edit_", "")
-            parts = plan_id.split("_")  # might have step appended
-            # We'll store step in plan_data
             raw_plan_data = user.get("plan_data")
             if raw_plan_data is None or raw_plan_data == "null":
                 raw_plan_data = "{}"
@@ -1034,7 +1059,6 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
                 if max_users <= 0:
                     await call_telegram("sendMessage", {"chat_id": chat_id, "text": "❌ محدودیت کاربر باید عدد مثبت باشد:"})
                     return True
-                # به‌روزرسانی در دیتابیس
                 name = plan_data.get("name", "بدون نام")
                 price = plan_data.get("price", 0)
                 duration = plan_data.get("duration_days", 0)
@@ -1048,7 +1072,7 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
                 })
                 return True
 
-        # ---------- بقیه state های ادمین (بدون تغییر) ----------
+        # ---------- بقیه state های ادمین ----------
         if state == "waiting_for_broadcast":
             if not text or text.strip() == "":
                 await call_telegram("sendMessage", {"chat_id": chat_id, "text": "❌ متن پیام نمی‌تواند خالی باشد. مجدداً ارسال کنید:"})
@@ -1145,7 +1169,7 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
             })
             return True
 
-        # ---------- افزودن پلن (بدون تغییر) ----------
+        # ---------- افزودن پلن ----------
         if state.startswith("waiting_plan_"):
             parts = state.split("_")
             step = parts[2] if len(parts) > 2 else "name"
@@ -1206,7 +1230,6 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
         if state == "waiting_for_help_content":
             help_data = {}
             if text:
-                # تشخیص وجود مارک‌داون ساده (اختیاری)
                 parse_mode = "Markdown" if any(marker in text for marker in ['*', '_', '`', '#']) else None
                 help_data = {"type": "text", "content": text, "parse_mode": parse_mode}
             elif message.get("photo"):
@@ -1247,7 +1270,7 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
                 await call_telegram("sendMessage", {"chat_id": chat_id, "text": "✅ محتوای دکمه داینامیک ثبت شد.", "reply_markup": get_admin_inline_keyboard()})
             return True
 
-    # ---------- حالت پشتیبانی (بدون تغییر) ----------
+    # ---------- حالت پشتیبانی ----------
     if state and state.startswith("support_session_"):
         await forward_support_message(user, message, chat_id)
         return True
@@ -1345,7 +1368,7 @@ async def process_callback(callback):
         await edit_message(chat_id, message_id, STRINGS["purchase_cancelled"], reply_markup=get_back_markup(is_admin_user))
         return
 
-    # ---------- دکمه‌های کاربر (بدون تغییر) ----------
+    # ---------- دکمه‌های کاربر ----------
     if data == "free_trial": return await handle_free_trial(user, chat_id, message_id, is_admin_user)
     if data == "wallet": return await handle_wallet(user, chat_id, message_id, is_admin_user)
     if data == "buy_service": return await handle_buy_service(user, chat_id, message_id, is_admin_user)
@@ -1400,7 +1423,7 @@ async def process_callback(callback):
             pass
         return
 
-    # ---------- QR و تمدید و حذف سرویس (بدون تغییر) ----------
+    # ---------- QR و تمدید و حذف سرویس ----------
     if data.startswith("qr_"):
         token = data.replace("qr_", "")
         sub_res = await query_db("SELECT * FROM subscriptions WHERE token = ? AND status = 'active'", token)
@@ -1469,7 +1492,7 @@ async def process_callback(callback):
         await edit_message(chat_id, message_id, "✅ سرویس با موفقیت حذف شد.", reply_markup={"inline_keyboard": [[{"text": "🔙 بازگشت", "callback_data": "my_services"}]]})
         return
 
-    # ---------- خرید پلن (بدون تغییر) ----------
+    # ---------- خرید پلن ----------
     if data.startswith("buy_plan_"):
         plan_id = int(data.replace("buy_plan_", ""))
         res = await query_db("SELECT * FROM plans WHERE id = ? AND is_active = 1", plan_id)
@@ -1524,14 +1547,12 @@ async def process_callback(callback):
 
     # ---------- تکرار کانفیگ ----------
     if data == "cfg_dup_cancel":
-        # لغو و پاک کردن state
         await execute_db("UPDATE users SET state = NULL, plan_data = NULL WHERE id = ?", user["id"])
         await edit_message(chat_id, message_id, STRINGS["config_duplicate_ignored"], reply_markup=get_back_markup(True))
         await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id})
         return
 
     if data == "cfg_dup_ignore":
-        # نادیده گرفتن و ثبت کانفیگ
         plan_data = user.get("plan_data")
         if plan_data:
             try:
@@ -1550,7 +1571,7 @@ async def process_callback(callback):
         await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id})
         return
 
-    # ---------- مدیریت کانفیگ‌ها (با صفحه‌بندی و دکمه افزودن) ----------
+    # ---------- مدیریت کانفیگ‌ها (با صفحه‌بندی و دکمه‌های جستجو و افزودن) ----------
     if data.startswith("adm_manage_configs") or data.startswith("adm_configs_page_"):
         page = 1
         if data.startswith("adm_configs_page_"):
@@ -1574,6 +1595,8 @@ async def process_callback(callback):
         kb = []
         # دکمه افزودن کانفیگ
         kb.append([{"text": "➕ افزودن کانفیگ", "callback_data": "adm_add_config"}])
+        # دکمه جستجوی کانفیگ (جدید)
+        kb.append([{"text": "🔍 جستجوی کانفیگ", "callback_data": "adm_search_config"}])
         # صفحه‌بندی
         nav = []
         if page > 1:
@@ -1609,25 +1632,48 @@ async def process_callback(callback):
         await execute_db("DELETE FROM configs WHERE id = ?", cfg_id)
         await delete_kv("configs_payload")
         await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "✅ کانفیگ حذف شد."})
-        # بازگشت به لیست
         await process_callback({"id": cq_id, "message": message, "data": "adm_manage_configs", "from": from_user})
         return
 
-    # ---------- افزودن کانفیگ (فقط state را تنظیم می‌کند) ----------
+    # ---------- حذف فوری کانفیگ (بدون تایید) ----------
+    if data.startswith("adm_cfg_del_immediate_"):
+        cfg_id = data.replace("adm_cfg_del_immediate_", "")
+        if int(cfg_id) == 0:
+            await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "❌ بنر دائمی قابل حذف نیست!", "show_alert": True})
+            return
+        await execute_db("DELETE FROM configs WHERE id = ?", cfg_id)
+        await delete_kv("configs_payload")
+        await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "✅ کانفیگ با موفقیت حذف شد."})
+        # بازگشت به لیست مدیریت
+        await process_callback({"id": cq_id, "message": message, "data": "adm_manage_configs", "from": from_user})
+        return
+
+    # ---------- افزودن کانفیگ (تنظیم state) ----------
     if data == "adm_add_config":
         await execute_db("UPDATE users SET state = 'waiting_for_config', plan_data = NULL WHERE id = ?", user["id"])
         await edit_message(chat_id, message_id, "📥 لطفا کانفیگ خود را ارسال کنید.\nبرای پایان، دکمه زیر را بزنید:", reply_markup={"inline_keyboard": [[{"text": "🔙 بازگشت به منوی اصلی", "callback_data": "admin_return"}]]})
         return
 
-    # ---------- مدیریت پلن‌ها (بدون تغییر وضعیت، با ویرایش و حذف تاییدی) ----------
+    # ---------- جستجوی کانفیگ (تنظیم state) ----------
+    if data == "adm_search_config":
+        await execute_db("UPDATE users SET state = 'waiting_for_config_search', plan_data = NULL WHERE id = ?", user["id"])
+        await edit_message(chat_id, message_id, "🔍 لطفاً کانفیگ مورد نظر برای جستجو را ارسال کنید (متن کامل یا بخشی از آن):", reply_markup={"inline_keyboard": [[{"text": "🔙 بازگشت", "callback_data": "adm_manage_configs"}]]})
+        return
+
+    # ---------- مدیریت پلن‌ها ----------
     if data == "adm_manage_plans":
         await show_plan_management(chat_id, message_id)
+        return
+
+    # ---------- افزودن پلن (رفع باگ دکمه شیشه‌ای) ----------
+    if data == "adm_add_plan":
+        await execute_db("UPDATE users SET state = 'waiting_plan_name', plan_data = '{}' WHERE id = ?", user["id"])
+        await edit_message(chat_id, message_id, STRINGS["plan_add_step1"], reply_markup={"inline_keyboard": [[{"text": "🔙 لغو", "callback_data": "adm_manage_plans"}]]})
         return
 
     # ---------- ویرایش پلن ----------
     if data.startswith("adm_plan_edit_"):
         plan_id = data.replace("adm_plan_edit_", "")
-        # تنظیم state برای ویرایش
         await execute_db("UPDATE users SET state = ?, plan_data = ? WHERE id = ?", f"waiting_plan_edit_{plan_id}", json.dumps({"step": "name"}), user["id"])
         await edit_message(chat_id, message_id, STRINGS["plan_edit_step1"], reply_markup={"inline_keyboard": [[{"text": "🔙 لغو", "callback_data": "adm_manage_plans"}]]})
         return
@@ -1647,7 +1693,7 @@ async def process_callback(callback):
         await show_plan_management(chat_id, message_id)
         return
 
-    # ---------- بقیه دکمه‌های ادمین (بدون تغییر) ----------
+    # ---------- بقیه دکمه‌های ادمین ----------
     if data == "adm_test_user":
         await execute_db("UPDATE users SET is_test_mode = 1 WHERE id = ?", user["id"])
         markup = await get_user_inline_keyboard(actual_is_admin)
@@ -1767,7 +1813,7 @@ async def process_callback(callback):
         await edit_message(chat_id, message_id, "محتوای دکمه داینامیک را ارسال کنید (پشتیبانی کامل از عکس، متن، ویدیو و فایل):\n\n💡 برای استفاده از مارک‌داون، متن را با *، _، ` یا # قالب‌بندی کنید.", reply_markup={"inline_keyboard": [[{"text": "🔙 بازگشت", "callback_data": "adm_dyn_btn"}]]})
         return
 
-    # ---------- مدیریت کاربران (بدون تغییر) ----------
+    # ---------- مدیریت کاربران ----------
     if data.startswith("adm_manage_users_"):
         page = safe_int(data.replace("adm_manage_users_", ""), 1)
         limit = 5
@@ -1810,7 +1856,7 @@ async def process_callback(callback):
     await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "❌ دستور نامعتبر", "show_alert": True})
 
 # ---------------------------------------------------------------------
-# نمایش پلن‌ها (با دکمه‌های ویرایش و حذف)
+# نمایش پلن‌ها (با دکمه‌های ویرایش، حذف و افزودن)
 # ---------------------------------------------------------------------
 async def show_plan_management(chat_id, message_id=None):
     res = await query_db("SELECT * FROM plans ORDER BY id DESC")
@@ -1828,7 +1874,6 @@ async def show_plan_management(chat_id, message_id=None):
         kb = []
         for p in plans:
             txt += STRINGS["plan_list_item"].format(name=p["name"], price=p["price"], duration=p["duration_days"], max_users=p["max_users"]) + "\n\n"
-            # دکمه‌های ویرایش و حذف
             kb.append([{"text": f"✏️ ویرایش {p['name']}", "callback_data": f"adm_plan_edit_{p['id']}"}])
             kb.append([{"text": f"🗑 حذف {p['name']}", "callback_data": f"adm_plan_del_req_{p['id']}"}])
         kb.append([{"text": "➕ افزودن پلن جدید", "callback_data": "adm_add_plan"}])
@@ -1955,7 +2000,7 @@ async def startup_event():
     await init_database_if_needed()
     asyncio.create_task(background_config_checker())
     asyncio.create_task(background_expiration_notifier())
-    logger.info("🚀 Bot Server Started! (CAT Enhanced v3 with requested modifications)")
+    logger.info("🚀 Bot Server Started! (CAT Enhanced v3 – Final with fixes & search)")
 
 @app.on_event("shutdown")
 async def shutdown_event():
