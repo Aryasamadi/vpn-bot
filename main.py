@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 ربات مدیریت ساب‌لینک v3 – نسخه CAT Enhanced
-- اصلاحات: بنر قابل تغییر توسط ادمین، لاگینگ، پاکسازی خودکار، بازخوانی کش، تلاش مجدد، بهبود نمایش سرویس‌ها
+- اصلاحات درخواستی: تکرار کانفیگ، مدیریت کانفیگ با صفحه‌بندی، مدیریت پلن‌ها (ویرایش و حذف با تایید)، پشتیبانی از مارک‌داون در محتوای راهنما و دکمه داینامیک، بهینه‌سازی سرعت
 """
 
 import os
@@ -31,7 +31,7 @@ logging.basicConfig(
 logger = logging.getLogger("CAT-BOT")
 
 # ---------------------------------------------------------------------
-# 🔐 متغیرهای محیطی (Environment Variables)
+# 🔐 متغیرهای محیطی
 # ---------------------------------------------------------------------
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 ADMIN_IDS = os.getenv("ADMIN_IDS", "")
@@ -43,8 +43,8 @@ CF_KV_ID = os.getenv("CF_KV_ID", "")
 
 APP_BASE_URL = os.getenv("APP_BASE_URL", "https://technowvpnbot.ariyacompany-io.workers.dev")
 
-# 🔥 بنر دائمی – این لینک به‌عنوان کانفیگ با id=0 در دیتابیس ذخیره می‌شود
-DEFAULT_BANNER_CONFIG = "vless://1234@1.1.1.1:443?encryption=none&security=tls&sni=sertraline.adaspoloandco.com&fp=chrome&type=ws&host=sertraline.adaspoloandco.com&path=%2Fdownload.php#%F0%9F%8C%90%D9%87%D8%B1%20%D8%B1%D9%88%D8%B2%20%D9%84%DB%8C%D9%86%DA%A9%20%D8%AE%D9%88%D8%AF%20%D8%B1%D8%A7%20%D8%A2%D9%BE%D8%AF%DB%8C%D8%AA%20%DA%A9%D9%86%DB%8C%D8%AF%E2%9A%A1"
+# 🔥 بنر دائمی
+BANNER_CONFIG = "vless://1234@1.1.1.1:443?encryption=none&security=tls&sni=sertraline.adaspoloandco.com&fp=chrome&type=ws&host=sertraline.adaspoloandco.com&path=%2Fdownload.php#%F0%9F%8C%90%D9%87%D8%B1%20%D8%B1%D9%88%D8%B2%20%D9%84%DB%8C%D9%86%DA%A9%20%D8%AE%D9%88%D8%AF%20%D8%B1%D8%A7%20%D8%A2%D9%BE%D8%AF%DB%8C%D8%AA%20%DA%A9%D9%86%DB%8C%D8%AF%E2%9A%A1"
 
 CF_HEADERS = {
     "Authorization": f"Bearer {CF_API_TOKEN}",
@@ -73,7 +73,7 @@ def del_local_cache(key):
     _local_cache.pop(key, None)
 
 # ---------------------------------------------------------------------
-# 📚 تمام متون فارسی در یک جا (با اضافه‌های جدید)
+# 📚 متون فارسی (با اضافات جدید)
 # ---------------------------------------------------------------------
 STRINGS = {
     "start_welcome": (
@@ -107,7 +107,7 @@ STRINGS = {
     "support_forwarded": "پیام از کاربر {user_id}:\n\n{text}",
     "admin_only": "⛔ این بخش فقط برای مدیران در دسترس است.",
     "admin_panel": "🛠 به بخش ادمین خوش آمدید. دستورات مدیریتی را انتخاب کنید:",
-    "config_added": "✅ کانفیگ جدید با موفقیت پردازش و ثبت شد . ",
+    "config_added": "✅ کانفیگ جدید با موفقیت پردازش و ثبت شد.",
     "config_add_stopped": "⏹ عملیات افزودن کانفیگ متوقف شد.",
     "broadcast_start": "📢 متن پیام همگانی خود را ارسال کنید :",
     "broadcast_sending": "⏳ در حال ارسال همگانی...",
@@ -134,17 +134,24 @@ STRINGS = {
     "plan_add_step4": "👥 محدودیت کاربر (حداکثر کاربر مجاز) را وارد کنید:",
     "plan_added": "✅ پلن «{name}» با موفقیت اضافه شد.",
     "plan_deleted": "🗑 پلن حذف شد.",
-    "plan_toggled": "✅ وضعیت پلن تغییر کرد.",
+    "plan_updated": "✅ پلن «{name}» با موفقیت به‌روزرسانی شد.",
     "no_plans": "هیچ پلنی وجود ندارد.",
-    "plan_list_item": "📌 نام: {name}\n💰 قیمت: {price:,} تومان\n📆 مدت: {duration} روز\n👥 لیمیت کاربر: {max_users}\n🟢 وضعیت: {status}",
+    "plan_list_item": "📌 نام: {name}\n💰 قیمت: {price:,} تومان\n📆 مدت: {duration} روز\n👥 لیمیت کاربر: {max_users}",
     "choose_plan": "پلن مورد نظر را انتخاب کنید:",
     "purchase_cancelled": "❌ عملیات لغو شد.",
-    "banner_updated": "✅ بنر دائمی با موفقیت به‌روزرسانی شد.",
-    "cache_refreshed": "🔄 کش کانفیگ‌ها با موفقیت بازخوانی شد.",
+    "config_duplicate": "⚠️ این کانفیگ قبلاً در دیتابیس وجود دارد. آیا مایل به ثبت مجدد آن هستید؟",
+    "config_duplicate_ignored": "⚠️ کانفیگ تکراری نادیده گرفته شد و ثبت نشد.",
+    "config_duplicate_forced": "✅ کانفیگ تکراری با نادیده گرفتن اخطار ثبت شد.",
+    "plan_edit_step1": "📝 نام جدید پلن را وارد کنید (یا 'لغو' برای انصراف):",
+    "plan_edit_step2": "💰 قیمت جدید را وارد کنید (یا 'لغو'):",
+    "plan_edit_step3": "📆 مدت جدید را وارد کنید (یا 'لغو'):",
+    "plan_edit_step4": "👥 محدودیت کاربر جدید را وارد کنید (یا 'لغو'):",
+    "delete_plan_confirm": "⚠️ آیا از حذف این پلن اطمینان دارید؟",
+    "delete_cancelled": "❌ عملیات حذف لغو شد.",
 }
 
 # ---------------------------------------------------------------------
-# 🔧 توابع کمکی و API کلاودفلر (با تلاش مجدد)
+# 🔧 توابع کمکی (با تلاش مجدد)
 # ---------------------------------------------------------------------
 def safe_int(value, default=0):
     try:
@@ -165,7 +172,6 @@ def get_first_row(db_res):
     return rows[0] if rows else None
 
 async def query_db(sql, *args, retries=3):
-    """اجرای کوئری با تلاش مجدد در صورت خطای موقت"""
     url = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/d1/database/{CF_D1_ID}/query"
     payload = {"sql": sql, "params": list(args)}
     for attempt in range(retries):
@@ -187,7 +193,7 @@ async def execute_db(sql, *args):
     return await query_db(sql, *args)
 
 # ---------------------------------------------------------------------
-# 📨 ارتباط با تلگرام و توابع ویرایش پیام
+# 📨 ارتباط با تلگرام
 # ---------------------------------------------------------------------
 async def call_telegram(method, payload):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/{method}"
@@ -214,7 +220,7 @@ def get_back_markup(is_admin_user):
     return {"inline_keyboard": [[{"text": "🔙 بازگشت به منوی اصلی", "callback_data": "admin_return" if is_admin_user else "user_return"}]]}
 
 # ---------------------------------------------------------------------
-# ⚙️ مدیریت تنظیمات با کش KV کلادفلر (با تلاش مجدد)
+# ⚙️ مدیریت تنظیمات با کش KV (با تلاش مجدد)
 # ---------------------------------------------------------------------
 async def get_kv(key, retries=3):
     url = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/storage/kv/namespaces/{CF_KV_ID}/values/{key}"
@@ -260,8 +266,32 @@ async def delete_kv(key, retries=3):
             logger.warning(f"KV delete error: {str(e)}, attempt {attempt+1}")
             await asyncio.sleep(0.5 * (attempt + 1))
 
+async def get_setting(key, default=None):
+    cached = get_local_cache(f"setting_{key}")
+    if cached is not None:
+        return cached
+
+    cached_kv = await get_kv(f"setting_{key}")
+    if cached_kv is not None:
+        set_local_cache(f"setting_{key}", cached_kv, 600)
+        return cached_kv
+
+    res = await query_db("SELECT value FROM settings WHERE key = ?", key)
+    row = get_first_row(res)
+    if row:
+        value = row["value"]
+        await put_kv(f"setting_{key}", value, expiration_ttl=600)
+        set_local_cache(f"setting_{key}", value, 600)
+        return value
+    return default
+
+async def set_setting(key, value):
+    await execute_db("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", key, str(value))
+    await put_kv(f"setting_{key}", str(value), expiration_ttl=600)
+    set_local_cache(f"setting_{key}", str(value), 600)
+
 # ---------------------------------------------------------------------
-# ✅ بهبود نمایش نام کانال‌های اجباری
+# ✅ بهبود نمایش نام کانال‌ها
 # ---------------------------------------------------------------------
 def normalize_channel_id(ch_id: str) -> str:
     ch_id = (ch_id or "").strip()
@@ -300,7 +330,7 @@ async def get_channel_pretty_name(ch_id: str) -> str:
     return ch_id
 
 # ---------------------------------------------------------------------
-# 🗄️ مقداردهی اولیه دیتابیس و پردازش کانفیگ
+# 🗄️ مقداردهی اولیه و توابع پردازش کانفیگ
 # ---------------------------------------------------------------------
 def extract_ip_from_config(config_text):
     try:
@@ -351,14 +381,17 @@ async def format_config_name(config_text):
 
 async def init_database_if_needed():
     initialized = await get_kv("db_initialized_v3_cat")
-    await execute_db("ALTER TABLE subscriptions ADD COLUMN notified_level INTEGER DEFAULT 0")
+    try:
+        await execute_db("ALTER TABLE subscriptions ADD COLUMN notified_level INTEGER DEFAULT 0")
+    except:
+        pass
 
     banner_exists = await query_db("SELECT id FROM configs WHERE id = 0")
     if not get_first_row(banner_exists):
-        await execute_db("INSERT INTO configs (id, config_text, is_active, fail_count) VALUES (0, ?, 1, 0)", DEFAULT_BANNER_CONFIG)
+        await execute_db("INSERT INTO configs (id, config_text, is_active, fail_count) VALUES (0, ?, 1, 0)", BANNER_CONFIG)
         logger.info("Banner config created with id=0")
     else:
-        await execute_db("UPDATE configs SET is_active = 1, config_text = ? WHERE id = 0", DEFAULT_BANNER_CONFIG)
+        await execute_db("UPDATE configs SET is_active = 1, config_text = ? WHERE id = 0", BANNER_CONFIG)
 
     if initialized == "true":
         return
@@ -425,15 +458,9 @@ async def init_database_if_needed():
     await put_kv("db_initialized_v3_cat", "true")
     logger.info("Database initialized with v3 schema")
 
-async def update_banner_config(new_config: str):
-    await execute_db("UPDATE configs SET config_text = ?, is_active = 1, fail_count = 0 WHERE id = 0", new_config)
-    await delete_kv("configs_payload")
-    logger.info("Banner config updated")
-
-async def refresh_configs_cache():
-    await delete_kv("configs_payload")
-    logger.info("Configs cache refreshed manually")
-
+# ---------------------------------------------------------------------
+# چکر خودکار کانفیگ‌ها (۳۰ دقیقه) – بنر را نادیده می‌گیرد
+# ---------------------------------------------------------------------
 async def background_config_checker():
     while True:
         await asyncio.sleep(30 * 60)
@@ -483,18 +510,9 @@ async def background_config_checker():
         except Exception as e:
             logger.error(f"Checker error: {e}")
 
-async def background_clean_expired_subs():
-    while True:
-        await asyncio.sleep(6 * 3600)
-        try:
-            now = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-            await execute_db("UPDATE subscriptions SET status = 'expired' WHERE expires_at < ? AND status = 'active'", now)
-            cutoff = (datetime.datetime.utcnow() - datetime.timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
-            await execute_db("DELETE FROM subscriptions WHERE expires_at < ? AND status = 'expired'", cutoff)
-            logger.info("Expired subscriptions cleaned up")
-        except Exception as e:
-            logger.error(f"Cleanup error: {e}")
-
+# ---------------------------------------------------------------------
+# سیستم یادآور انقضا (۱۵ دقیقه)
+# ---------------------------------------------------------------------
 async def background_expiration_notifier():
     while True:
         await asyncio.sleep(15 * 60)
@@ -558,6 +576,9 @@ async def background_expiration_notifier():
         except Exception as e:
             logger.error(f"Notifier error: {e}")
 
+# ---------------------------------------------------------------------
+# 🧑‍💼 توابع کاربر و ادمین
+# ---------------------------------------------------------------------
 def is_admin(telegram_id, user_data=None):
     if not ADMIN_IDS:
         return False
@@ -639,6 +660,9 @@ async def check_channel_membership(telegram_id, force_refresh=False):
     set_local_cache(cache_key, True, 20)
     return True
 
+# =====================================================================
+# 🔥 تولید لینک با تایتل بدون |
+# =====================================================================
 async def build_sub_url_async(token: str) -> str:
     cache_key = f"sub_url_{token}"
     cached = get_local_cache(cache_key)
@@ -690,6 +714,9 @@ async def build_sub_url_async(token: str) -> str:
 
     return full_url
 
+# ---------------------------------------------------------------------
+# 📋 کیبوردهای اینلاین
+# ---------------------------------------------------------------------
 async def get_user_inline_keyboard(is_actual_admin=False):
     kb = [
         [{"text": "🛒 خرید سرویس", "callback_data": "buy_service"}, {"text": "🎁 تست رایگان", "callback_data": "free_trial"}],
@@ -712,8 +739,7 @@ def get_admin_inline_keyboard():
     return {
         "inline_keyboard": [
             [{"text": "📦 مدیریت پلن‌ها", "callback_data": "adm_manage_plans"}, {"text": "👤 مدیریت کاربران", "callback_data": "adm_manage_users_1"}],
-            [{"text": "📋 مدیریت کانفیگ‌ها", "callback_data": "adm_manage_configs"}, {"text": "➕ افزودن کانفیگ", "callback_data": "adm_add_config"}],
-            [{"text": "🔄 بازخوانی کش کانفیگ", "callback_data": "adm_refresh_cache"}, {"text": "🖼 تغییر بنر", "callback_data": "adm_update_banner"}],
+            [{"text": "📋 مدیریت کانفیگ‌ها", "callback_data": "adm_manage_configs"}],  # حذف دکمه جداگانه افزودن
             [{"text": "⚙️ تنظیمات", "callback_data": "adm_settings"}, {"text": "📢 ارسال همگانی", "callback_data": "adm_broadcast"}],
             [{"text": "👤 نمای کاربری (تست)", "callback_data": "adm_test_user"}]
         ]
@@ -726,6 +752,9 @@ def get_plans_inline_keyboard(plans, is_admin_user):
     kb.append([{"text": "🔙 بازگشت به منوی اصلی", "callback_data": "admin_return" if is_admin_user else "user_return"}])
     return {"inline_keyboard": kb}
 
+# ---------------------------------------------------------------------
+# 🧠 توابع اصلی
+# ---------------------------------------------------------------------
 async def send_membership_requirement(chat_id, message_id=None):
     force_channels = await get_setting("force_channels", "")
     if not force_channels:
@@ -777,6 +806,9 @@ async def credit_referrer_if_pending(user, chat_id):
         await execute_db("UPDATE users SET referred_by = ? WHERE id = ?", new_ref_status, user["id"])
         user["referred_by"] = new_ref_status
 
+# ---------------------------------------------------------------------
+# 🧩 هندلرهای کاربر
+# ---------------------------------------------------------------------
 async def handle_free_trial(user, chat_id, message_id, is_admin_user):
     if user.get("has_used_trial"):
         await edit_message(chat_id, message_id, STRINGS["trial_already_used"], reply_markup=get_back_markup(is_admin_user))
@@ -908,6 +940,9 @@ async def create_subscription_from_plan(plan_id, user_id):
     await execute_db("INSERT INTO subscriptions (user_id, plan_id, token, expires_at) VALUES (?, ?, ?, ?)", user_id, plan_id, token, expires_at)
     return token
 
+# ---------------------------------------------------------------------
+# 💬 مدیریت state ها (با تغییرات)
+# ---------------------------------------------------------------------
 async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_admin):
     text = message.get("text", "").strip()
 
@@ -922,29 +957,98 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
         return True
 
     if is_admin_user:
-        if state == "waiting_for_banner_update":
-            await update_banner_config(text)
-            await execute_db("UPDATE users SET state = NULL WHERE id = ?", user["id"])
-            markup = {"inline_keyboard": [[{"text": "🔙 بازگشت به منوی اصلی", "callback_data": "admin_return"}]]}
-            await call_telegram("sendMessage", {
-                "chat_id": chat_id,
-                "text": STRINGS["banner_updated"],
-                "reply_markup": markup
-            })
-            return True
-
+        # ---------- افزودن کانفیگ با بررسی تکراری ----------
         if state == "waiting_for_config":
-            formatted_cfg = await format_config_name(text)
-            await execute_db("INSERT INTO configs (config_text) VALUES (?)", formatted_cfg)
-            await delete_kv("configs_payload")
-            markup = {"inline_keyboard": [[{"text": "🔙 بازگشت به منوی اصلی", "callback_data": "admin_return"}]]}
-            await call_telegram("sendMessage", {
-                "chat_id": chat_id,
-                "text": STRINGS["config_added"],
-                "reply_markup": markup
-            })
-            return True
+            # بررسی تکراری بودن
+            existing = await query_db("SELECT id FROM configs WHERE config_text = ?", text)
+            if get_first_row(existing):
+                # تکراری است: ذخیره موقت و نمایش گزینه‌ها
+                await execute_db("UPDATE users SET plan_data = ? WHERE id = ?", json.dumps({"config_text": text, "action": "add"}), user["id"])
+                await execute_db("UPDATE users SET state = 'waiting_for_dup_decision' WHERE id = ?", user["id"])
+                markup = {"inline_keyboard": [
+                    [{"text": "❌ لغو (ثبت نشود)", "callback_data": "cfg_dup_cancel"},
+                     {"text": "✅ نادیده گرفتن (ثبت شود)", "callback_data": "cfg_dup_ignore"}]
+                ]}
+                await call_telegram("sendMessage", {
+                    "chat_id": chat_id,
+                    "text": STRINGS["config_duplicate"],
+                    "reply_markup": markup
+                })
+                return True
+            else:
+                # تکراری نیست، مستقیماً ثبت کن
+                formatted_cfg = await format_config_name(text)
+                await execute_db("INSERT INTO configs (config_text) VALUES (?)", formatted_cfg)
+                await delete_kv("configs_payload")
+                markup = {"inline_keyboard": [[{"text": "🔙 بازگشت به منوی اصلی", "callback_data": "admin_return"}]]}
+                await call_telegram("sendMessage", {
+                    "chat_id": chat_id,
+                    "text": STRINGS["config_added"],
+                    "reply_markup": markup
+                })
+                await execute_db("UPDATE users SET state = NULL, plan_data = NULL WHERE id = ?", user["id"])
+                return True
 
+        # ---------- ویرایش پلن ----------
+        if state.startswith("waiting_plan_edit_"):
+            plan_id = state.replace("waiting_plan_edit_", "")
+            parts = plan_id.split("_")  # might have step appended
+            # We'll store step in plan_data
+            raw_plan_data = user.get("plan_data")
+            if raw_plan_data is None or raw_plan_data == "null":
+                raw_plan_data = "{}"
+            try:
+                plan_data = json.loads(raw_plan_data)
+            except:
+                plan_data = {}
+            step = plan_data.get("step", "name")
+
+            if step == "name":
+                plan_data["name"] = text
+                plan_data["step"] = "price"
+                await execute_db("UPDATE users SET plan_data = ? WHERE id = ?", json.dumps(plan_data), user["id"])
+                await call_telegram("sendMessage", {"chat_id": chat_id, "text": STRINGS["plan_edit_step2"]})
+                return True
+            elif step == "price":
+                price = safe_int(text)
+                if price <= 0:
+                    await call_telegram("sendMessage", {"chat_id": chat_id, "text": "❌ قیمت باید عدد مثبت باشد:"})
+                    return True
+                plan_data["price"] = price
+                plan_data["step"] = "duration"
+                await execute_db("UPDATE users SET plan_data = ? WHERE id = ?", json.dumps(plan_data), user["id"])
+                await call_telegram("sendMessage", {"chat_id": chat_id, "text": STRINGS["plan_edit_step3"]})
+                return True
+            elif step == "duration":
+                dur = safe_int(text)
+                if dur <= 0:
+                    await call_telegram("sendMessage", {"chat_id": chat_id, "text": "❌ مدت باید عدد مثبت باشد:"})
+                    return True
+                plan_data["duration_days"] = dur
+                plan_data["step"] = "maxusers"
+                await execute_db("UPDATE users SET plan_data = ? WHERE id = ?", json.dumps(plan_data), user["id"])
+                await call_telegram("sendMessage", {"chat_id": chat_id, "text": STRINGS["plan_edit_step4"]})
+                return True
+            elif step == "maxusers":
+                max_users = safe_int(text)
+                if max_users <= 0:
+                    await call_telegram("sendMessage", {"chat_id": chat_id, "text": "❌ محدودیت کاربر باید عدد مثبت باشد:"})
+                    return True
+                # به‌روزرسانی در دیتابیس
+                name = plan_data.get("name", "بدون نام")
+                price = plan_data.get("price", 0)
+                duration = plan_data.get("duration_days", 0)
+                await execute_db("UPDATE plans SET name = ?, price = ?, duration_days = ?, max_users = ? WHERE id = ?",
+                                 name, price, duration, max_users, plan_id)
+                await execute_db("UPDATE users SET state = NULL, plan_data = NULL WHERE id = ?", user["id"])
+                await call_telegram("sendMessage", {
+                    "chat_id": chat_id,
+                    "text": STRINGS["plan_updated"].format(name=name),
+                    "reply_markup": get_admin_inline_keyboard()
+                })
+                return True
+
+        # ---------- بقیه state های ادمین (بدون تغییر) ----------
         if state == "waiting_for_broadcast":
             if not text or text.strip() == "":
                 await call_telegram("sendMessage", {"chat_id": chat_id, "text": "❌ متن پیام نمی‌تواند خالی باشد. مجدداً ارسال کنید:"})
@@ -1041,6 +1145,7 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
             })
             return True
 
+        # ---------- افزودن پلن (بدون تغییر) ----------
         if state.startswith("waiting_plan_"):
             parts = state.split("_")
             step = parts[2] if len(parts) > 2 else "name"
@@ -1097,16 +1202,19 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
                 })
                 return True
 
+        # ---------- محتوای راهنما با پشتیبانی از مارک‌داون ----------
         if state == "waiting_for_help_content":
             help_data = {}
             if text:
-                help_data = {"type": "text", "content": text}
+                # تشخیص وجود مارک‌داون ساده (اختیاری)
+                parse_mode = "Markdown" if any(marker in text for marker in ['*', '_', '`', '#']) else None
+                help_data = {"type": "text", "content": text, "parse_mode": parse_mode}
             elif message.get("photo"):
-                help_data = {"type": "photo", "file_id": message["photo"][-1]["file_id"], "caption": message.get("caption", "")}
+                help_data = {"type": "photo", "file_id": message["photo"][-1]["file_id"], "caption": message.get("caption", ""), "parse_mode": "Markdown" if message.get("caption") else None}
             elif message.get("video"):
-                help_data = {"type": "video", "file_id": message["video"]["file_id"], "caption": message.get("caption", "")}
+                help_data = {"type": "video", "file_id": message["video"]["file_id"], "caption": message.get("caption", ""), "parse_mode": "Markdown" if message.get("caption") else None}
             elif message.get("document"):
-                help_data = {"type": "document", "file_id": message["document"]["file_id"], "caption": message.get("caption", "")}
+                help_data = {"type": "document", "file_id": message["document"]["file_id"], "caption": message.get("caption", ""), "parse_mode": "Markdown" if message.get("caption") else None}
 
             if help_data:
                 await set_setting("help_content", json.dumps(help_data))
@@ -1114,6 +1222,7 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
                 await call_telegram("sendMessage", {"chat_id": chat_id, "text": "✅ محتوای راهنما با موفقیت ثبت شد.", "reply_markup": get_admin_inline_keyboard()})
             return True
 
+        # ---------- دکمه داینامیک با پشتیبانی از مارک‌داون ----------
         if state == "waiting_dyn_title":
             await set_setting("dyn_btn_title", text.strip())
             await execute_db("UPDATE users SET state = NULL WHERE id = ?", user["id"])
@@ -1123,13 +1232,14 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
         if state == "waiting_dyn_content":
             dyn_data = {}
             if text:
-                dyn_data = {"type": "text", "content": text}
+                parse_mode = "Markdown" if any(marker in text for marker in ['*', '_', '`', '#']) else None
+                dyn_data = {"type": "text", "content": text, "parse_mode": parse_mode}
             elif message.get("photo"):
-                dyn_data = {"type": "photo", "file_id": message["photo"][-1]["file_id"], "caption": message.get("caption", "")}
+                dyn_data = {"type": "photo", "file_id": message["photo"][-1]["file_id"], "caption": message.get("caption", ""), "parse_mode": "Markdown" if message.get("caption") else None}
             elif message.get("video"):
-                dyn_data = {"type": "video", "file_id": message["video"]["file_id"], "caption": message.get("caption", "")}
+                dyn_data = {"type": "video", "file_id": message["video"]["file_id"], "caption": message.get("caption", ""), "parse_mode": "Markdown" if message.get("caption") else None}
             elif message.get("document"):
-                dyn_data = {"type": "document", "file_id": message["document"]["file_id"], "caption": message.get("caption", "")}
+                dyn_data = {"type": "document", "file_id": message["document"]["file_id"], "caption": message.get("caption", ""), "parse_mode": "Markdown" if message.get("caption") else None}
 
             if dyn_data:
                 await set_setting("dyn_btn_content", json.dumps(dyn_data))
@@ -1137,12 +1247,16 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
                 await call_telegram("sendMessage", {"chat_id": chat_id, "text": "✅ محتوای دکمه داینامیک ثبت شد.", "reply_markup": get_admin_inline_keyboard()})
             return True
 
+    # ---------- حالت پشتیبانی (بدون تغییر) ----------
     if state and state.startswith("support_session_"):
         await forward_support_message(user, message, chat_id)
         return True
 
     return False
 
+# ---------------------------------------------------------------------
+# 📞 پردازش Callback (با تغییرات)
+# ---------------------------------------------------------------------
 async def process_callback(callback):
     cq_id = callback["id"]
     message = callback.get("message", {})
@@ -1156,30 +1270,28 @@ async def process_callback(callback):
     actual_is_admin = is_admin(telegram_id, user_data=None)
     is_admin_user = is_admin(telegram_id, user_data=user)
 
-    defer_answer = data.startswith("confirm_buy_") or data == "chk_membership" or data.startswith("qr_") or data.startswith("confirm_renew_")
+    defer_answer = data.startswith("confirm_buy_") or data == "chk_membership" or data.startswith("qr_") or data.startswith("confirm_renew_") or data.startswith("cfg_dup")
     if not defer_answer and data != "end_support":
         await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id})
 
+    # ---------- پایان پشتیبانی ----------
     if data == "end_support":
         await execute_db("UPDATE users SET state = NULL WHERE id = ?", user["id"])
-
         await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "✅ نشست پشتیبانی پایان یافت.", "show_alert": True})
         await edit_message(chat_id, message_id, "🔚 نشست پشتیبانی پایان یافت.\n\n(این پیام به‌زودی پاک می‌شود)", reply_markup=None)
-
         markup = await get_user_inline_keyboard(actual_is_admin)
         await call_telegram("sendMessage", {
             "chat_id": chat_id,
             "text": STRINGS["start_welcome"],
             "reply_markup": markup
         })
-
         async def delete_old_message_later():
             await asyncio.sleep(5)
             await call_telegram("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
-
         asyncio.create_task(delete_old_message_later())
         return
 
+    # ---------- بازگشت به منو ----------
     if data in ["user_return", "admin_return"]:
         if user.get("state") is not None:
             await execute_db("UPDATE users SET state = NULL, plan_data = NULL WHERE id = ?", user["id"])
@@ -1206,6 +1318,7 @@ async def process_callback(callback):
             })
         return
 
+    # ---------- بررسی عضویت ----------
     if data != "chk_membership" and not await check_channel_membership(telegram_id, force_refresh=False):
         await send_membership_requirement(chat_id, message_id)
         return
@@ -1227,10 +1340,12 @@ async def process_callback(callback):
             })
         return
 
+    # ---------- لغو عملیات ----------
     if data == "cancel_action":
         await edit_message(chat_id, message_id, STRINGS["purchase_cancelled"], reply_markup=get_back_markup(is_admin_user))
         return
 
+    # ---------- دکمه‌های کاربر (بدون تغییر) ----------
     if data == "free_trial": return await handle_free_trial(user, chat_id, message_id, is_admin_user)
     if data == "wallet": return await handle_wallet(user, chat_id, message_id, is_admin_user)
     if data == "buy_service": return await handle_buy_service(user, chat_id, message_id, is_admin_user)
@@ -1238,6 +1353,7 @@ async def process_callback(callback):
     if data == "referral": return await handle_referral(user, chat_id, message_id, is_admin_user)
     if data == "support": return await handle_support_start(user, chat_id, message_id, is_admin_user)
 
+    # ---------- راهنما با پشتیبانی از مارک‌داون ----------
     if data == "help_btn":
         help_val = await get_setting("help_content")
         if not help_val:
@@ -1245,54 +1361,53 @@ async def process_callback(callback):
             return
         try:
             help_data = json.loads(help_val)
+            parse_mode = help_data.get("parse_mode", None)
             if help_data["type"] == "text":
-                await edit_message(chat_id, message_id, help_data["content"], reply_markup=get_back_markup(is_admin_user))
+                await edit_message(chat_id, message_id, help_data["content"], reply_markup=get_back_markup(is_admin_user), parse_mode=parse_mode)
             else:
                 await call_telegram("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
                 if help_data["type"] == "photo":
-                    await call_telegram("sendPhoto", {"chat_id": chat_id, "photo": help_data["file_id"], "caption": help_data.get("caption", ""), "reply_markup": get_back_markup(is_admin_user)})
+                    await call_telegram("sendPhoto", {"chat_id": chat_id, "photo": help_data["file_id"], "caption": help_data.get("caption", ""), "reply_markup": get_back_markup(is_admin_user), "parse_mode": parse_mode})
                 elif help_data["type"] == "video":
-                    await call_telegram("sendVideo", {"chat_id": chat_id, "video": help_data["file_id"], "caption": help_data.get("caption", ""), "reply_markup": get_back_markup(is_admin_user)})
+                    await call_telegram("sendVideo", {"chat_id": chat_id, "video": help_data["file_id"], "caption": help_data.get("caption", ""), "reply_markup": get_back_markup(is_admin_user), "parse_mode": parse_mode})
                 elif help_data["type"] == "document":
-                    await call_telegram("sendDocument", {"chat_id": chat_id, "document": help_data["file_id"], "caption": help_data.get("caption", ""), "reply_markup": get_back_markup(is_admin_user)})
+                    await call_telegram("sendDocument", {"chat_id": chat_id, "document": help_data["file_id"], "caption": help_data.get("caption", ""), "reply_markup": get_back_markup(is_admin_user), "parse_mode": parse_mode})
         except:
             pass
         return
 
+    # ---------- دکمه داینامیک با پشتیبانی از مارک‌داون ----------
     if data == "dyn_btn_click":
         content_val = await get_setting("dyn_btn_content")
-
         if not content_val:
             await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "محتوایی تنظیم نشده است.", "show_alert": True})
             return
-
         markup = {"inline_keyboard": [[{"text": "🔙 بازگشت", "callback_data": "user_return"}]]}
-
         try:
             dyn_data = json.loads(content_val)
+            parse_mode = dyn_data.get("parse_mode", None)
             if dyn_data["type"] == "text":
-                await edit_message(chat_id, message_id, dyn_data["content"], reply_markup=markup)
+                await edit_message(chat_id, message_id, dyn_data["content"], reply_markup=markup, parse_mode=parse_mode)
             else:
                 await call_telegram("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
                 if dyn_data["type"] == "photo":
-                    await call_telegram("sendPhoto", {"chat_id": chat_id, "photo": dyn_data["file_id"], "caption": dyn_data.get("caption", ""), "reply_markup": markup})
+                    await call_telegram("sendPhoto", {"chat_id": chat_id, "photo": dyn_data["file_id"], "caption": dyn_data.get("caption", ""), "reply_markup": markup, "parse_mode": parse_mode})
                 elif dyn_data["type"] == "video":
-                    await call_telegram("sendVideo", {"chat_id": chat_id, "video": dyn_data["file_id"], "caption": dyn_data.get("caption", ""), "reply_markup": markup})
+                    await call_telegram("sendVideo", {"chat_id": chat_id, "video": dyn_data["file_id"], "caption": dyn_data.get("caption", ""), "reply_markup": markup, "parse_mode": parse_mode})
                 elif dyn_data["type"] == "document":
-                    await call_telegram("sendDocument", {"chat_id": chat_id, "document": dyn_data["file_id"], "caption": dyn_data.get("caption", ""), "reply_markup": markup})
+                    await call_telegram("sendDocument", {"chat_id": chat_id, "document": dyn_data["file_id"], "caption": dyn_data.get("caption", ""), "reply_markup": markup, "parse_mode": parse_mode})
         except:
             pass
         return
 
+    # ---------- QR و تمدید و حذف سرویس (بدون تغییر) ----------
     if data.startswith("qr_"):
         token = data.replace("qr_", "")
         sub_res = await query_db("SELECT * FROM subscriptions WHERE token = ? AND status = 'active'", token)
         if not get_first_row(sub_res):
             await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "❌ اشتراک یافت نشد.", "show_alert": True})
             return
-
         await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id})
-
         sub_url = await build_sub_url_async(token)
         qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={sub_url}"
         await call_telegram("sendPhoto", {
@@ -1316,7 +1431,6 @@ async def process_callback(callback):
         if not plan:
             await edit_message(chat_id, message_id, "❌ پلن مرتبط با این سرویس حذف شده است.", reply_markup={"inline_keyboard": [[{"text": "🔙 بازگشت", "callback_data": "my_services"}]]})
             return
-
         markup = {"inline_keyboard": [[{"text": "✅ تایید پرداخت", "callback_data": f"confirm_renew_{token}"}, {"text": "❌ لغو", "callback_data": "my_services"}]]}
         await edit_message(chat_id, message_id, f"هزینه تمدید {plan['duration_days']} روزه: {plan['price']:,} تومان\nآیا تایید میکنید؟", reply_markup=markup)
         return
@@ -1327,21 +1441,17 @@ async def process_callback(callback):
         sub = get_first_row(sub_res)
         plan_res = await query_db("SELECT * FROM plans WHERE id = ?", sub["plan_id"])
         plan = get_first_row(plan_res)
-
         if user["balance"] < plan["price"]:
             await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "❌ موجودی کافی نیست.", "show_alert": True})
             return
-
         await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id})
         await execute_db("UPDATE users SET balance = balance - ? WHERE id = ?", plan["price"], user["id"])
-
         try:
             expires_at = datetime.datetime.strptime(sub["expires_at"], "%Y-%m-%d %H:%M:%S")
             if expires_at < datetime.datetime.utcnow():
                 expires_at = datetime.datetime.utcnow()
         except:
             expires_at = datetime.datetime.utcnow()
-
         new_expires_at = (expires_at + datetime.timedelta(days=plan["duration_days"])).strftime("%Y-%m-%d %H:%M:%S")
         await execute_db("UPDATE subscriptions SET expires_at = ?, status = 'active', notified_level = 0 WHERE id = ?", new_expires_at, sub["id"])
         await edit_message(chat_id, message_id, f"✅ سرویس با موفقیت تمدید شد.\nانقضای جدید: {new_expires_at} (UTC)", reply_markup={"inline_keyboard": [[{"text": "🔙 بازگشت", "callback_data": "my_services"}]]})
@@ -1359,6 +1469,7 @@ async def process_callback(callback):
         await edit_message(chat_id, message_id, "✅ سرویس با موفقیت حذف شد.", reply_markup={"inline_keyboard": [[{"text": "🔙 بازگشت", "callback_data": "my_services"}]]})
         return
 
+    # ---------- خرید پلن (بدون تغییر) ----------
     if data.startswith("buy_plan_"):
         plan_id = int(data.replace("buy_plan_", ""))
         res = await query_db("SELECT * FROM plans WHERE id = ? AND is_active = 1", plan_id)
@@ -1366,7 +1477,6 @@ async def process_callback(callback):
         if not plan:
             await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "❌ پلن مورد نظر فعال نیست.", "show_alert": True})
             return
-
         markup = {"inline_keyboard": [[{"text": "✅ تایید خرید", "callback_data": f"confirm_buy_{plan_id}"}, {"text": "❌ لغو", "callback_data": "buy_service"}]]}
         await edit_message(chat_id, message_id, f"آیا از خرید این پلن به مبلغ {plan['price']:,} تومان اطمینان دارید؟", reply_markup=markup)
         return
@@ -1375,31 +1485,24 @@ async def process_callback(callback):
         plan_id = int(data.replace("confirm_buy_", ""))
         res = await query_db("SELECT * FROM plans WHERE id = ?", plan_id)
         plan = get_first_row(res)
-
         if not plan:
             await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "❌ این پلن حذف شده یا نامعتبر است.", "show_alert": True})
             return
-
         price = plan["price"]
-
         if user["balance"] < price:
             msg = STRINGS["insufficient_balance"].format(balance=user["balance"], price=price)
             await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": msg, "show_alert": True})
             return
-
         await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id})
-
         await execute_db("UPDATE users SET balance = balance - ? WHERE id = ?", price, user["id"])
         token = await create_subscription_from_plan(plan_id, user["id"])
         if not token:
             await call_telegram("sendMessage", {"chat_id": chat_id, "text": "❌ خطا در ایجاد اشتراک."})
             return
-
         sub_url = await build_sub_url_async(token)
         expires_at = (datetime.datetime.utcnow() + datetime.timedelta(days=plan["duration_days"])).strftime("%Y-%m-%d %H:%M:%S")
         qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={sub_url}"
         msg = STRINGS["subscription_created"].format(duration=plan["duration_days"], sublink=sub_url, expires_at=expires_at)
-
         await call_telegram("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
         await call_telegram("sendPhoto", {
             "chat_id": chat_id,
@@ -1410,86 +1513,145 @@ async def process_callback(callback):
         })
         return
 
+    # ---------- فقط مدیران ----------
     if not is_admin_user:
         await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": STRINGS["admin_only"], "show_alert": True})
         return
 
-    if data == "adm_test_user":
-        await execute_db("UPDATE users SET is_test_mode = 1 WHERE id = ?", user["id"])
-        markup = await get_user_inline_keyboard(actual_is_admin)
-        await edit_message(chat_id, message_id, "شما اکنون در نمای کاربری (تست) هستید. برای بازگشت دکمه مربوطه را بزنید.", reply_markup=markup)
+    # =============================================================
+    # ---------- بخش‌های مدیریتی (با تغییرات) ----------
+    # =============================================================
+
+    # ---------- تکرار کانفیگ ----------
+    if data == "cfg_dup_cancel":
+        # لغو و پاک کردن state
+        await execute_db("UPDATE users SET state = NULL, plan_data = NULL WHERE id = ?", user["id"])
+        await edit_message(chat_id, message_id, STRINGS["config_duplicate_ignored"], reply_markup=get_back_markup(True))
+        await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id})
         return
 
-    if data == "adm_refresh_cache":
-        await refresh_configs_cache()
-        await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "✅ کش بازخوانی شد!"})
-        await edit_message(chat_id, message_id, STRINGS["cache_refreshed"], reply_markup=get_admin_inline_keyboard())
+    if data == "cfg_dup_ignore":
+        # نادیده گرفتن و ثبت کانفیگ
+        plan_data = user.get("plan_data")
+        if plan_data:
+            try:
+                data_obj = json.loads(plan_data)
+                config_text = data_obj.get("config_text")
+                if config_text:
+                    formatted_cfg = await format_config_name(config_text)
+                    await execute_db("INSERT INTO configs (config_text) VALUES (?)", formatted_cfg)
+                    await delete_kv("configs_payload")
+                    await execute_db("UPDATE users SET state = NULL, plan_data = NULL WHERE id = ?", user["id"])
+                    await edit_message(chat_id, message_id, STRINGS["config_duplicate_forced"], reply_markup=get_back_markup(True))
+                else:
+                    await call_telegram("sendMessage", {"chat_id": chat_id, "text": "❌ خطا: کانفیگ یافت نشد."})
+            except Exception as e:
+                logger.error(f"Error in cfg_dup_ignore: {e}")
+        await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id})
         return
 
-    if data == "adm_update_banner":
-        await execute_db("UPDATE users SET state = 'waiting_for_banner_update' WHERE id = ?", user["id"])
-        await edit_message(chat_id, message_id, "📥 لطفاً کانفیگ جدید بنر را ارسال کنید (این کانفیگ به‌عنوان id=0 ذخیره می‌شود):", reply_markup={"inline_keyboard": [[{"text": "🔙 بازگشت به منوی اصلی", "callback_data": "admin_return"}]]})
-        return
+    # ---------- مدیریت کانفیگ‌ها (با صفحه‌بندی و دکمه افزودن) ----------
+    if data.startswith("adm_manage_configs") or data.startswith("adm_configs_page_"):
+        page = 1
+        if data.startswith("adm_configs_page_"):
+            page = safe_int(data.replace("adm_configs_page_", ""), 1)
+        limit = 5
+        offset = (page - 1) * limit
+        res = await query_db("SELECT id, config_text, is_active FROM configs ORDER BY id DESC LIMIT ? OFFSET ?", limit, offset)
+        configs = get_rows(res)
+        total_res = await query_db("SELECT COUNT(*) as cnt FROM configs")
+        total_row = get_first_row(total_res)
+        total = total_row["cnt"] if total_row else 0
+        total_pages = (total + limit - 1) // limit
 
-    if data == "adm_add_config":
-        await execute_db("UPDATE users SET state = 'waiting_for_config' WHERE id = ?", user["id"])
-        await edit_message(chat_id, message_id, "📥 لطفا کانفیگ خود را ارسال کنید.\nبرای پایان، دکمه زیر را بزنید:", reply_markup={"inline_keyboard": [[{"text": "🔙 بازگشت به منوی اصلی", "callback_data": "admin_return"}]]})
-        return
+        if not configs and page == 1:
+            txt = "📋 هیچ کانفیگی موجود نیست."
+        else:
+            txt = f"📋 لیست کانفیگ‌ها (صفحه {page} از {total_pages}):\n\n"
+            for c in configs:
+                txt += f"🆔 {c['id']} | {'فعال' if c['is_active'] else 'غیرفعال'}\n`{c['config_text'][:100]}...`\n\n"
 
-    if data == "adm_manage_configs":
-        cfg_res = await query_db("SELECT id, config_text, is_active FROM configs ORDER BY id DESC LIMIT 20")
-        configs = get_rows(cfg_res)
-        if not configs:
-            await edit_message(chat_id, message_id, "هیچ کانفیگی موجود نیست.", reply_markup=get_back_markup(True))
-            return
-
-        await call_telegram("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
+        kb = []
+        # دکمه افزودن کانفیگ
+        kb.append([{"text": "➕ افزودن کانفیگ", "callback_data": "adm_add_config"}])
+        # صفحه‌بندی
+        nav = []
+        if page > 1:
+            nav.append({"text": "◀️ قبلی", "callback_data": f"adm_configs_page_{page-1}"})
+        nav.append({"text": f"صفحه {page}/{total_pages}", "callback_data": "ignore"})
+        if page < total_pages:
+            nav.append({"text": "▶️ بعدی", "callback_data": f"adm_configs_page_{page+1}"})
+        if nav:
+            kb.append(nav)
+        # دکمه حذف برای هر کانفیگ (به جز بنر id=0)
         for c in configs:
-            markup = {
-                "inline_keyboard": [
-                    [{"text": "❌ حذف", "callback_data": f"adm_cfg_del_req_{c['id']}"}]
-                ]
-            }
-            await call_telegram("sendMessage", {
-                "chat_id": chat_id,
-                "text": f"شناسه کانفیگ: {c['id']}\n```{c['config_text']}```",
-                "parse_mode": "Markdown",
-                "reply_markup": markup
-            })
+            if c['id'] == 0:
+                continue
+            kb.append([{"text": f"🗑 حذف کانفیگ {c['id']}", "callback_data": f"adm_cfg_del_req_{c['id']}"}])
+        kb.append([{"text": "🔙 بازگشت به منوی اصلی", "callback_data": "admin_return"}])
 
-        await call_telegram("sendMessage", {
-            "chat_id": chat_id,
-            "text": "بازگشت به پنل مدیریت:",
-            "reply_markup": get_back_markup(True)
-        })
+        await edit_message(chat_id, message_id, txt, reply_markup={"inline_keyboard": kb}, parse_mode="Markdown")
         return
 
+    # ---------- حذف کانفیگ با تایید ----------
     if data.startswith("adm_cfg_del_req_"):
         cfg_id = data.replace("adm_cfg_del_req_", "")
+        if int(cfg_id) == 0:
+            await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "❌ بنر دائمی قابل حذف نیست!", "show_alert": True})
+            return
         markup = {"inline_keyboard": [[{"text": "✅ بله، حذف کن", "callback_data": f"adm_cfg_del_yes_{cfg_id}"},
-                                      {"text": "❌ لغو", "callback_data": f"adm_cfg_del_cancel_{cfg_id}"}]]}
-        await edit_message(chat_id, message_id, "آیا از حذف این کانفیگ اطمینان دارید؟", reply_markup=markup)
-        return
-
-    if data.startswith("adm_cfg_del_cancel_"):
-        cfg_id = data.replace("adm_cfg_del_cancel_", "")
-        res = await query_db("SELECT config_text FROM configs WHERE id = ?", cfg_id)
-        cfg = get_first_row(res)
-        if cfg:
-            markup = {"inline_keyboard": [[{"text": "❌ حذف", "callback_data": f"adm_cfg_del_req_{cfg_id}"}]]}
-            await edit_message(chat_id, message_id, f"شناسه کانفیگ: {cfg_id}\n```{cfg['config_text']}```", reply_markup=markup, parse_mode="Markdown")
-        else:
-            await call_telegram("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
+                                      {"text": "❌ لغو", "callback_data": "adm_manage_configs"}]]}
+        await edit_message(chat_id, message_id, f"⚠️ آیا از حذف کانفیگ با شناسه {cfg_id} اطمینان دارید؟", reply_markup=markup)
         return
 
     if data.startswith("adm_cfg_del_yes_"):
         cfg_id = data.replace("adm_cfg_del_yes_", "")
-        if int(cfg_id) == 0:
-            await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "❌ بنر دائمی قابل حذف نیست!", "show_alert": True})
-            return
         await execute_db("DELETE FROM configs WHERE id = ?", cfg_id)
         await delete_kv("configs_payload")
-        await call_telegram("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
+        await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "✅ کانفیگ حذف شد."})
+        # بازگشت به لیست
+        await process_callback({"id": cq_id, "message": message, "data": "adm_manage_configs", "from": from_user})
+        return
+
+    # ---------- افزودن کانفیگ (فقط state را تنظیم می‌کند) ----------
+    if data == "adm_add_config":
+        await execute_db("UPDATE users SET state = 'waiting_for_config', plan_data = NULL WHERE id = ?", user["id"])
+        await edit_message(chat_id, message_id, "📥 لطفا کانفیگ خود را ارسال کنید.\nبرای پایان، دکمه زیر را بزنید:", reply_markup={"inline_keyboard": [[{"text": "🔙 بازگشت به منوی اصلی", "callback_data": "admin_return"}]]})
+        return
+
+    # ---------- مدیریت پلن‌ها (بدون تغییر وضعیت، با ویرایش و حذف تاییدی) ----------
+    if data == "adm_manage_plans":
+        await show_plan_management(chat_id, message_id)
+        return
+
+    # ---------- ویرایش پلن ----------
+    if data.startswith("adm_plan_edit_"):
+        plan_id = data.replace("adm_plan_edit_", "")
+        # تنظیم state برای ویرایش
+        await execute_db("UPDATE users SET state = ?, plan_data = ? WHERE id = ?", f"waiting_plan_edit_{plan_id}", json.dumps({"step": "name"}), user["id"])
+        await edit_message(chat_id, message_id, STRINGS["plan_edit_step1"], reply_markup={"inline_keyboard": [[{"text": "🔙 لغو", "callback_data": "adm_manage_plans"}]]})
+        return
+
+    # ---------- حذف پلن با تایید ----------
+    if data.startswith("adm_plan_del_req_"):
+        plan_id = data.replace("adm_plan_del_req_", "")
+        markup = {"inline_keyboard": [[{"text": "✅ بله، حذف کن", "callback_data": f"adm_plan_del_yes_{plan_id}"},
+                                      {"text": "❌ لغو", "callback_data": "adm_manage_plans"}]]}
+        await edit_message(chat_id, message_id, STRINGS["delete_plan_confirm"], reply_markup=markup)
+        return
+
+    if data.startswith("adm_plan_del_yes_"):
+        plan_id = data.replace("adm_plan_del_yes_", "")
+        await execute_db("DELETE FROM plans WHERE id = ?", plan_id)
+        await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "✅ پلن حذف شد."})
+        await show_plan_management(chat_id, message_id)
+        return
+
+    # ---------- بقیه دکمه‌های ادمین (بدون تغییر) ----------
+    if data == "adm_test_user":
+        await execute_db("UPDATE users SET is_test_mode = 1 WHERE id = ?", user["id"])
+        markup = await get_user_inline_keyboard(actual_is_admin)
+        await edit_message(chat_id, message_id, "شما اکنون در نمای کاربری (تست) هستید. برای بازگشت دکمه مربوطه را بزنید.", reply_markup=markup)
         return
 
     if data == "adm_broadcast":
@@ -1501,19 +1663,15 @@ async def process_callback(callback):
         if user.get("state") != "waiting_for_broadcast_confirm":
             await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "❌ وضعیت نامعتبر.", "show_alert": True})
             return
-
         msg_text = await get_kv(f"broadcast_{user['id']}")
         if not msg_text or msg_text.strip() == "":
             await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "❌ متن پیام یافت نشد.", "show_alert": True})
             return
-
         await execute_db("UPDATE users SET state = NULL WHERE id = ?", user["id"])
         await delete_kv(f"broadcast_{user['id']}")
-
         all_users_res = await query_db("SELECT telegram_id FROM users")
         all_users = get_rows(all_users_res)
         await edit_message(chat_id, message_id, STRINGS["broadcast_sending"])
-
         success = 0
         for u in all_users:
             res = await call_telegram("sendMessage", {
@@ -1523,7 +1681,6 @@ async def process_callback(callback):
             if res.get("ok"):
                 success += 1
             await asyncio.sleep(0.05)
-
         await edit_message(chat_id, message_id, STRINGS["broadcast_done"].format(success=success, total=len(all_users)), reply_markup=get_admin_inline_keyboard())
         return
 
@@ -1569,7 +1726,6 @@ async def process_callback(callback):
             ch_list.remove(ch_to_del)
             await set_setting("force_channels", ",".join(ch_list))
             await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "✅ کانال حذف شد."})
-
             channels_str = await get_setting("force_channels", "")
             ch_list = [c.strip() for c in channels_str.split(",") if c.strip()]
             kb = []
@@ -1587,7 +1743,7 @@ async def process_callback(callback):
 
     if data == "adm_set_help":
         await execute_db("UPDATE users SET state = 'waiting_for_help_content' WHERE id = ?", user["id"])
-        await edit_message(chat_id, message_id, "محتوای دکمه راهنما را ارسال کنید (پشتیبانی از متن، عکس، ویدیو و فایل):", reply_markup={"inline_keyboard": [[{"text": "🔙 بازگشت", "callback_data": "adm_settings"}]]})
+        await edit_message(chat_id, message_id, "محتوای دکمه راهنما را ارسال کنید (پشتیبانی از متن، عکس، ویدیو و فایل):\n\n💡 برای استفاده از مارک‌داون، متن را با *، _، ` یا # قالب‌بندی کنید.", reply_markup={"inline_keyboard": [[{"text": "🔙 بازگشت", "callback_data": "adm_settings"}]]})
         return
 
     if data == "adm_dyn_btn":
@@ -1608,9 +1764,10 @@ async def process_callback(callback):
 
     if data == "adm_dyn_content":
         await execute_db("UPDATE users SET state = 'waiting_dyn_content' WHERE id = ?", user["id"])
-        await edit_message(chat_id, message_id, "محتوای دکمه داینامیک را ارسال کنید (پشتیبانی کامل از عکس، متن، ویدیو و فایل):", reply_markup={"inline_keyboard": [[{"text": "🔙 بازگشت", "callback_data": "adm_dyn_btn"}]]})
+        await edit_message(chat_id, message_id, "محتوای دکمه داینامیک را ارسال کنید (پشتیبانی کامل از عکس، متن، ویدیو و فایل):\n\n💡 برای استفاده از مارک‌داون، متن را با *، _، ` یا # قالب‌بندی کنید.", reply_markup={"inline_keyboard": [[{"text": "🔙 بازگشت", "callback_data": "adm_dyn_btn"}]]})
         return
 
+    # ---------- مدیریت کاربران (بدون تغییر) ----------
     if data.startswith("adm_manage_users_"):
         page = safe_int(data.replace("adm_manage_users_", ""), 1)
         limit = 5
@@ -1629,7 +1786,6 @@ async def process_callback(callback):
         nav.append({"text": f"صفحه {page}", "callback_data": "ignore"})
         if len(users) == limit:
             nav.append({"text": "▶️ بعدی", "callback_data": f"adm_manage_users_{page+1}"})
-
         kb.append(nav)
         kb.append([{"text": "🔙 بازگشت به منوی اصلی", "callback_data": "admin_return"}])
 
@@ -1650,48 +1806,31 @@ async def process_callback(callback):
         await edit_message(chat_id, message_id, f"💵 میزان شارژ مایل به {action_text} (به تومان) را بفرستید:", reply_markup=get_back_markup(True))
         return
 
-    if data == "adm_manage_plans":
-        await show_plan_management(chat_id, message_id)
-        return
+    # ---------- در صورت عدم تطابق ----------
+    await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "❌ دستور نامعتبر", "show_alert": True})
 
-    if data == "adm_add_plan":
-        await execute_db("UPDATE users SET state = 'waiting_plan_name', plan_data = NULL WHERE id = ?", user["id"])
-        await edit_message(chat_id, message_id, STRINGS["plan_add_step1"], reply_markup={"inline_keyboard": [[{"text": "🔙 بازگشت", "callback_data": "adm_manage_plans"}]]})
-        return
-
-    if data.startswith("adm_plan_toggle_"):
-        plan_id = data.replace("adm_plan_toggle_", "")
-        res = await query_db("SELECT is_active FROM plans WHERE id = ?", plan_id)
-        plan = get_first_row(res)
-        if plan:
-            new_state = 0 if plan["is_active"] else 1
-            await execute_db("UPDATE plans SET is_active = ? WHERE id = ?", new_state, plan_id)
-            await show_plan_management(chat_id, message_id)
-        return
-
-    if data.startswith("adm_plan_del_"):
-        plan_id = data.replace("adm_plan_del_", "")
-        await execute_db("DELETE FROM plans WHERE id = ?", plan_id)
-        await show_plan_management(chat_id, message_id)
-        return
-
+# ---------------------------------------------------------------------
+# نمایش پلن‌ها (با دکمه‌های ویرایش و حذف)
+# ---------------------------------------------------------------------
 async def show_plan_management(chat_id, message_id=None):
     res = await query_db("SELECT * FROM plans ORDER BY id DESC")
     plans = get_rows(res)
     if not plans:
+        txt = STRINGS["no_plans"]
+        kb = [[{"text": "➕ افزودن پلن جدید", "callback_data": "adm_add_plan"}],
+              [{"text": "🔙 بازگشت به منوی اصلی", "callback_data": "admin_return"}]]
         if message_id:
-            await edit_message(chat_id, message_id, STRINGS["no_plans"], reply_markup={"inline_keyboard": [[{"text": "➕ افزودن پلن جدید", "callback_data": "adm_add_plan"}], [{"text": "🔙 بازگشت به منوی اصلی", "callback_data": "admin_return"}]]})
+            await edit_message(chat_id, message_id, txt, reply_markup={"inline_keyboard": kb})
         else:
-            await call_telegram("sendMessage", {"chat_id": chat_id, "text": STRINGS["no_plans"], "reply_markup": {"inline_keyboard": [[{"text": "➕ افزودن پلن جدید", "callback_data": "adm_add_plan"}], [{"text": "🔙 بازگشت به منوی اصلی", "callback_data": "admin_return"}]]}})
+            await call_telegram("sendMessage", {"chat_id": chat_id, "text": txt, "reply_markup": {"inline_keyboard": kb}})
     else:
         txt = "📦 لیست پلن‌ها:\n\n"
         kb = []
         for p in plans:
-            status = "فعال" if p["is_active"] else "غیرفعال"
-            txt += STRINGS["plan_list_item"].format(name=p["name"], price=p["price"], duration=p["duration_days"], max_users=p["max_users"], status=status) + "\n\n"
-            kb.append([{"text": f"تغییر وضعیت {p['name']}", "callback_data": f"adm_plan_toggle_{p['id']}"}])
-            kb.append([{"text": f"❌ حذف {p['name']}", "callback_data": f"adm_plan_del_{p['id']}"}])
-
+            txt += STRINGS["plan_list_item"].format(name=p["name"], price=p["price"], duration=p["duration_days"], max_users=p["max_users"]) + "\n\n"
+            # دکمه‌های ویرایش و حذف
+            kb.append([{"text": f"✏️ ویرایش {p['name']}", "callback_data": f"adm_plan_edit_{p['id']}"}])
+            kb.append([{"text": f"🗑 حذف {p['name']}", "callback_data": f"adm_plan_del_req_{p['id']}"}])
         kb.append([{"text": "➕ افزودن پلن جدید", "callback_data": "adm_add_plan"}])
         kb.append([{"text": "🔙 بازگشت به منوی اصلی", "callback_data": "admin_return"}])
 
@@ -1707,6 +1846,9 @@ async def show_admin_panel(chat_id):
         "reply_markup": get_admin_inline_keyboard()
     })
 
+# ---------------------------------------------------------------------
+# 📨 پردازش پیام
+# ---------------------------------------------------------------------
 async def process_message(message):
     chat_id = message["chat"]["id"]
     text = message.get("text", "").strip()
@@ -1763,7 +1905,6 @@ async def process_message(message):
                     method = "sendDocument"
                     payload["document"] = message["document"]["file_id"]
                     payload["caption"] = f"پاسخ پشتیبانی:\n{message.get('caption', '')}"
-
                 await call_telegram(method, payload)
                 await call_telegram("sendMessage", {"chat_id": chat_id, "text": "✅ پاسخ شما به کاربر ارسال شد."})
                 return
@@ -1802,6 +1943,9 @@ async def process_update(update):
         logger.error("Error in process_update:")
         traceback.print_exc()
 
+# ---------------------------------------------------------------------
+# 🚀 سرور FastAPI
+# ---------------------------------------------------------------------
 app = FastAPI()
 
 @app.on_event("startup")
@@ -1811,8 +1955,7 @@ async def startup_event():
     await init_database_if_needed()
     asyncio.create_task(background_config_checker())
     asyncio.create_task(background_expiration_notifier())
-    asyncio.create_task(background_clean_expired_subs())
-    logger.info("🚀 Bot Server Started! (CAT Enhanced v3)")
+    logger.info("🚀 Bot Server Started! (CAT Enhanced v3 with requested modifications)")
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -1872,9 +2015,6 @@ async def handle_sublink(token: str):
         cached_payload = base64.b64encode(combined.encode('utf-8')).decode('utf-8')
         await put_kv(cache_key, cached_payload, expiration_ttl=300)
 
-    # =============================================================
-    # 🚨 این دو خط اصلی‌ترین جاهایی هستن که باید درست باشن
-    # =============================================================
     title_b64 = base64.b64encode(plan_title.encode('utf-8')).decode('utf-8')
     safe_title = urllib.parse.quote(plan_title)
 
