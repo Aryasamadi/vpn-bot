@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-ربات مدیریت ساب‌لینک v3 – نسخه CAT Enhanced (Final)
+ربات مدیریت ساب‌لینک v3 – نسخه CAT Enhanced (Final + Search Fix & Display Name)
 - رفع باگ دکمه افزودن پلن
-- اضافه شدن جستجوی کانفیگ با حذف فوری (بدون تایید)
-- بهینه‌سازی کش محلی و کاهش درخواست‌های اضافی
-- پشتیبانی کامل از مارک‌داون در راهنما و دکمه داینامیک
+- جستجوی کانفیگ بر اساس نام (فلگ، کشور، کد)
+- نمایش نام کانفیگ به جای کد خام در لیست و نتایج جستجو
+- بهینه‌سازی مصرف حافظه و کاهش درخواست‌های اضافی
 """
 
 import os
@@ -346,6 +346,22 @@ def extract_ip_from_config(config_text):
     except:
         pass
     return ""
+
+def extract_config_name(config_text):
+    """استخراج نام کانفیگ (ps برای vmess، fragment برای vless و غیره)"""
+    try:
+        if config_text.startswith("vmess://"):
+            decoded = base64.b64decode(config_text[8:]).decode('utf-8')
+            j = json.loads(decoded)
+            return j.get('ps', '')
+        elif "://" in config_text:
+            parsed = urllib.parse.urlparse(config_text)
+            fragment = parsed.fragment
+            if fragment:
+                return urllib.parse.unquote(fragment)
+    except:
+        pass
+    return None
 
 async def format_config_name(config_text):
     ip = extract_ip_from_config(config_text)
@@ -960,14 +976,14 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
         return True
 
     if is_admin_user:
-        # ---------- جستجوی کانفیگ (جدید) ----------
+        # ---------- جستجوی کانفیگ (بهینه‌شده) ----------
         if state == "waiting_for_config_search":
             search_text = text.strip()
             if not search_text:
                 await call_telegram("sendMessage", {"chat_id": chat_id, "text": "❌ لطفاً متن معتبری ارسال کنید."})
                 return True
-            # جستجو با LIKE (می‌توانید به exact تغییر دهید)
-            res = await query_db("SELECT id, config_text FROM configs WHERE config_text LIKE ?", f"%{search_text}%")
+            # جستجو در کل کانفیگ (شامل نام)
+            res = await query_db("SELECT id, config_text FROM configs WHERE LOWER(config_text) LIKE LOWER(?)", f"%{search_text}%")
             configs = get_rows(res)
             if not configs:
                 await call_telegram("sendMessage", {"chat_id": chat_id, "text": "❌ کانفیگی با این مشخصات یافت نشد."})
@@ -980,9 +996,11 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
             txt = "✅ کانفیگ‌های یافت شده:\n\n"
             kb = []
             for cfg in configs:
-                txt += f"🆔 {cfg['id']}\n`{cfg['config_text'][:100]}...`\n\n"
+                cfg_name = extract_config_name(cfg["config_text"])
+                display = cfg_name if cfg_name else f"🆔 {cfg['id']} (بدون نام)"
+                txt += f"🆔 {cfg['id']} | {display}\n\n"
                 if cfg['id'] != 0:
-                    kb.append([{"text": f"🗑 حذف فوری کانفیگ {cfg['id']}", "callback_data": f"adm_cfg_del_immediate_{cfg['id']}"}])
+                    kb.append([{"text": f"🗑 حذف فوری {display}", "callback_data": f"adm_cfg_del_immediate_{cfg['id']}"}])
             kb.append([{"text": "🔙 بازگشت به مدیریت کانفیگ", "callback_data": "adm_manage_configs"}])
             await call_telegram("sendMessage", {"chat_id": chat_id, "text": txt, "parse_mode": "Markdown", "reply_markup": {"inline_keyboard": kb}})
             return True
@@ -1571,7 +1589,7 @@ async def process_callback(callback):
         await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id})
         return
 
-    # ---------- مدیریت کانفیگ‌ها (با صفحه‌بندی و دکمه‌های جستجو و افزودن) ----------
+    # ---------- مدیریت کانفیگ‌ها (با صفحه‌بندی و نمایش نام) ----------
     if data.startswith("adm_manage_configs") or data.startswith("adm_configs_page_"):
         page = 1
         if data.startswith("adm_configs_page_"):
@@ -1590,14 +1608,13 @@ async def process_callback(callback):
         else:
             txt = f"📋 لیست کانفیگ‌ها (صفحه {page} از {total_pages}):\n\n"
             for c in configs:
-                txt += f"🆔 {c['id']} | {'فعال' if c['is_active'] else 'غیرفعال'}\n`{c['config_text'][:100]}...`\n\n"
+                cfg_name = extract_config_name(c["config_text"])
+                display = cfg_name if cfg_name else f"🆔 {c['id']} (بدون نام)"
+                txt += f"🆔 {c['id']} | {display}\n\n"
 
         kb = []
-        # دکمه افزودن کانفیگ
         kb.append([{"text": "➕ افزودن کانفیگ", "callback_data": "adm_add_config"}])
-        # دکمه جستجوی کانفیگ (جدید)
         kb.append([{"text": "🔍 جستجوی کانفیگ", "callback_data": "adm_search_config"}])
-        # صفحه‌بندی
         nav = []
         if page > 1:
             nav.append({"text": "◀️ قبلی", "callback_data": f"adm_configs_page_{page-1}"})
@@ -1606,7 +1623,6 @@ async def process_callback(callback):
             nav.append({"text": "▶️ بعدی", "callback_data": f"adm_configs_page_{page+1}"})
         if nav:
             kb.append(nav)
-        # دکمه حذف برای هر کانفیگ (به جز بنر id=0)
         for c in configs:
             if c['id'] == 0:
                 continue
@@ -1644,7 +1660,6 @@ async def process_callback(callback):
         await execute_db("DELETE FROM configs WHERE id = ?", cfg_id)
         await delete_kv("configs_payload")
         await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "✅ کانفیگ با موفقیت حذف شد."})
-        # بازگشت به لیست مدیریت
         await process_callback({"id": cq_id, "message": message, "data": "adm_manage_configs", "from": from_user})
         return
 
@@ -2000,7 +2015,7 @@ async def startup_event():
     await init_database_if_needed()
     asyncio.create_task(background_config_checker())
     asyncio.create_task(background_expiration_notifier())
-    logger.info("🚀 Bot Server Started! (CAT Enhanced v3 – Final with fixes & search)")
+    logger.info("🚀 Bot Server Started! (CAT Enhanced v3 – Final with search fix & display name)")
 
 @app.on_event("shutdown")
 async def shutdown_event():
