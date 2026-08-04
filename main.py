@@ -1,12 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-ربات مدیریت ساب‌لینک v3 – نسخه CAT Enhanced (نهایی نهایی)
-- رفع باگ دکمه‌های تکراری
-- ماندن در همان صفحه پس از حذف
-- حذف پیام پایان پشتیبانی (فقط پاپ‌آپ)
-- افزودن کانفیگ زنجیره‌ای
-- حذف دکمه جستجو
+ربات مدیریت ساب‌لینک v3 – نسخه CAT Enhanced (فوق‌بهینه برای سرعت)
+- افزایش TTL کش محلی به ۱ ساعت
+- افزایش TTL ذخیره‌سازی KV به ۱ روز
+- ایجاد ایندکس روی ستون key در جدول settings برای加速 کوئری‌های D1
+- رفع باگ دکمه افزودن پلن
+- حذف دکمه جستجو (غیرضروری)
 - همه حذف‌ها بدون تایید
+- ماندن در صفحه پس از حذف
+- پایان پشتیبانی فقط پاپ‌آپ
 """
 
 import os
@@ -71,7 +73,7 @@ def get_local_cache(key):
             del _local_cache[key]
     return None
 
-def set_local_cache(key, value, ttl=300):
+def set_local_cache(key, value, ttl=3600):  # ← TTL افزایش به ۱ ساعت
     _local_cache[key] = (value, time.time() + ttl)
 
 def del_local_cache(key):
@@ -225,7 +227,7 @@ def get_back_markup(is_admin_user):
     return {"inline_keyboard": [[{"text": "🔙 بازگشت به منوی اصلی", "callback_data": "admin_return" if is_admin_user else "user_return"}]]}
 
 # ---------------------------------------------------------------------
-# ⚙️ مدیریت تنظیمات با کش KV (با تلاش مجدد)
+# ⚙️ مدیریت تنظیمات با کش KV (با تلاش مجدد) - TTL افزایش‌یافته
 # ---------------------------------------------------------------------
 async def get_kv(key, retries=3):
     url = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/storage/kv/namespaces/{CF_KV_ID}/values/{key}"
@@ -241,7 +243,7 @@ async def get_kv(key, retries=3):
         await asyncio.sleep(0.5 * (attempt + 1))
     return None
 
-async def put_kv(key, value, expiration_ttl=None, retries=3):
+async def put_kv(key, value, expiration_ttl=86400, retries=3):  # ← TTL افزایش به ۱ روز
     url = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/storage/kv/namespaces/{CF_KV_ID}/values/{key}"
     params = {}
     if expiration_ttl:
@@ -278,22 +280,22 @@ async def get_setting(key, default=None):
 
     cached_kv = await get_kv(f"setting_{key}")
     if cached_kv is not None:
-        set_local_cache(f"setting_{key}", cached_kv, 600)
+        set_local_cache(f"setting_{key}", cached_kv, 3600)  # ← کش محلی ۱ ساعت
         return cached_kv
 
     res = await query_db("SELECT value FROM settings WHERE key = ?", key)
     row = get_first_row(res)
     if row:
         value = row["value"]
-        await put_kv(f"setting_{key}", value, expiration_ttl=600)
-        set_local_cache(f"setting_{key}", value, 600)
+        await put_kv(f"setting_{key}", value, expiration_ttl=86400)  # ← KV ۱ روز
+        set_local_cache(f"setting_{key}", value, 3600)
         return value
     return default
 
 async def set_setting(key, value):
     await execute_db("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", key, str(value))
-    await put_kv(f"setting_{key}", str(value), expiration_ttl=600)
-    set_local_cache(f"setting_{key}", str(value), 600)
+    await put_kv(f"setting_{key}", str(value), expiration_ttl=86400)
+    set_local_cache(f"setting_{key}", str(value), 3600)
 
 # ---------------------------------------------------------------------
 # ✅ بهبود نمایش نام کانال‌ها
@@ -467,6 +469,9 @@ async def init_database_if_needed():
     for q in queries:
         await execute_db(q)
 
+    # ✅ ایجاد ایندکس روی ستون key برای سرعت بخشیدن به جستجوهای settings
+    await execute_db("CREATE INDEX IF NOT EXISTS idx_settings_key ON settings(key);")
+
     defaults = {
         "referral_reward": "2000",
         "force_channels": "",
@@ -477,7 +482,7 @@ async def init_database_if_needed():
             await execute_db("INSERT INTO settings (key, value) VALUES (?, ?)", key, val)
 
     await put_kv("db_initialized_v3_cat", "true")
-    logger.info("Database initialized with v3 schema")
+    logger.info("Database initialized with v3 schema + index on settings.key")
 
 # ---------------------------------------------------------------------
 # چکر خودکار کانفیگ‌ها (۳۰ دقیقه) – بنر را نادیده می‌گیرد
@@ -1927,7 +1932,7 @@ async def startup_event():
     await init_database_if_needed()
     asyncio.create_task(background_config_checker())
     asyncio.create_task(background_expiration_notifier())
-    logger.info("🚀 Bot Server Started! (CAT Enhanced v3 – FINAL ULTIMATE)")
+    logger.info("🚀 Bot Server Started! (CAT Enhanced v3 – FINAL ULTIMATE with TTL & INDEX)")
 
 @app.on_event("shutdown")
 async def shutdown_event():
