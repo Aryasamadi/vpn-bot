@@ -135,7 +135,7 @@ STRINGS = {
     "plan_toggled": "✅ وضعیت پلن تغییر کرد.",
     "no_plans": "هیچ پلنی وجود ندارد.",
     "plan_list_item": "📌 نام: {name}\n💰 قیمت: {price:,} تومان\n📆 مدت: {duration} روز\n👥 لیمیت کاربر: {max_users}\n🟢 وضعیت: {status}",
-    "choose_plan": "پلن مورد نظر را انتخاب کنید:",
+    "choose_plan": "پلن مورد نظر را انتخاب کنید:\n\n « تمامی پلن های زیر حجم نامحدود هستند »",
     "purchase_cancelled": "❌ عملیات لغو شد.",
 }
 
@@ -515,7 +515,7 @@ async def background_expiration_notifier():
                 if time_left_sec <= 3600 and notified_level < 3:
                     msg = (f"⚠️ **هشدار خیلی مهم** ⚠️\n\nفقط **۱ ساعت** تا پایان اعتبار سرویس شما باقی مانده است!\n\n"
                            f"🔗 لینک سرویس: `{sub_url}`\n💰 موجودی کیف پول: {sub['balance']:,} تومان\n\n"
-                           f"جهت جلوگیری از قطعی اینترنت، سریعاً از طریق دکمه زیر تمدید کنید.")
+                           f"جهت جلوگیری از قطعی سرویس، سریعاً از طریق دکمه زیر تمدید کنید.")
                     new_level = 3
                 elif time_left_sec <= 86400 and notified_level < 2:
                     msg = (f"⏳ **یادآوری تمدید**\n\nسرویس شما **۲۴ ساعت** دیگر منقضی خواهد شد.\n\n"
@@ -707,7 +707,7 @@ def get_admin_inline_keyboard():
             [{"text": "📦 مدیریت پلن‌ها", "callback_data": "adm_manage_plans"}, {"text": "👤 مدیریت کاربران", "callback_data": "adm_manage_users_1"}],
             [{"text": "📋 مدیریت کانفیگ‌ها", "callback_data": "adm_manage_configs"}, {"text": "➕ افزودن کانفیگ", "callback_data": "adm_add_config"}],
             [{"text": "⚙️ تنظیمات", "callback_data": "adm_settings"}, {"text": "📢 ارسال همگانی", "callback_data": "adm_broadcast"}],
-            [{"text": "👤 نمای کاربری (تست)", "callback_data": "adm_test_user"}]
+            [{"text": "👤 نمای کاربری", "callback_data": "adm_test_user"}]
         ]
     }
 
@@ -893,7 +893,7 @@ async def forward_support_message(user, message, chat_id):
 
     await call_telegram("sendMessage", {
         "chat_id": chat_id,
-        "text": "✅ پیام شما به پشتیبانی ارسال شد. منتظر پاسخ باشید."
+        "text": "✅ پیام شما ارسال شد. منتظر پاسخ باشید."
     })
 
 async def create_subscription_from_plan(plan_id, user_id):
@@ -1158,7 +1158,7 @@ async def process_callback(callback):
         await execute_db("UPDATE users SET state = NULL WHERE id = ?", user["id"])
 
         await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "✅ نشست پشتیبانی پایان یافت.", "show_alert": True})
-        await edit_message(chat_id, message_id, "🔚 نشست پشتیبانی پایان یافت.\n\n(این پیام به‌زودی پاک می‌شود)", reply_markup=None)
+        await edit_message(chat_id, message_id, "🔚 نشست پشتیبانی پایان یافت.", reply_markup=None)
 
         markup = await get_user_inline_keyboard(actual_is_admin)
         await call_telegram("sendMessage", {
@@ -1216,7 +1216,7 @@ async def process_callback(callback):
         else:
             await call_telegram("answerCallbackQuery", {
                 "callback_query_id": cq_id,
-                "text": "❌ هنوز در کانال‌های اجباری عضو نشده‌اید!\nبعد از عضویت دوباره تلاش کنید.",
+                "text": "❌ هنوز در کانال عضو نشده‌اید!\nبعد از عضویت دوباره تلاش کنید.",
                 "show_alert": True
             })
         return
@@ -1412,7 +1412,7 @@ async def process_callback(callback):
     if data == "adm_test_user":
         await execute_db("UPDATE users SET is_test_mode = 1 WHERE id = ?", user["id"])
         markup = await get_user_inline_keyboard(actual_is_admin)
-        await edit_message(chat_id, message_id, "شما اکنون در نمای کاربری (تست) هستید. برای بازگشت دکمه مربوطه را بزنید.", reply_markup=markup)
+        await edit_message(chat_id, message_id, "شما اکنون در نمای کاربری هستید. برای بازگشت دکمه مربوطه را بزنید.", reply_markup=markup)
         return
 
     if data == "adm_add_config":
