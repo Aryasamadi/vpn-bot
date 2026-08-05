@@ -871,7 +871,7 @@ async def handle_buy_service(user, chat_id, message_id, is_admin_user):
         await edit_message(chat_id, message_id, "❌ هیچ پلن فعالی در حال حاضر موجود نیست.", reply_markup=get_back_markup(is_admin_user))
         return
 
-    txt = "🛒 پلن مورد نظر خود را انتخاب کنید:\n«برای افزایش موجودی ، به دوستانتان لینک دعوت خود را ارسال کنید » \n\n"
+    txt = "🛒 پلن مورد نظر خود را انتخاب کنید:\n\n💰افزایش موجودی تنها با دعوت دوستان ممکن است\n\n"
     for p in plans:
         txt += f"📌 {p['name']} \n 👥 {p['max_users']} کاربر \n 📆 {p['duration_days']} روز \n 💰 {p['price']:,} تومان\n\n"
 
