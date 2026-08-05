@@ -745,7 +745,7 @@ async def build_sub_url_async(token: str) -> str:
 # ---------------------------------------------------------------------
 async def get_user_inline_keyboard(is_actual_admin=False):
     kb = [
-        [{"text": "🛒 خرید سرویس", "callback_data": "buy_service"}, {"text": "🎁 تست رایگان", "callback_data": "free_trial"}],
+        [{"text": "🛒 خرید سرویس(رایگان)", "callback_data": "buy_service"}, {"text": "🎁 تست رایگان", "callback_data": "free_trial"}],
         [{"text": "📱 سرویس‌های من", "callback_data": "my_services"}, {"text": "👛 کیف پول", "callback_data": "wallet"}],
         [{"text": "👥 دعوت دوستان", "callback_data": "referral"}, {"text": "🎧 پشتیبانی", "callback_data": "support"}]
     ]
@@ -871,7 +871,7 @@ async def handle_buy_service(user, chat_id, message_id, is_admin_user):
         await edit_message(chat_id, message_id, "❌ هیچ پلن فعالی در حال حاضر موجود نیست.", reply_markup=get_back_markup(is_admin_user))
         return
 
-    txt = "🛒 پلن مورد نظر خود را انتخاب کنید:\n\n"
+    txt = "🛒 پلن مورد نظر خود را انتخاب کنید:\n«برای افزایش موجودی ، به دوستانتان لینک دعوت خود را ارسال کنید » \n\n"
     for p in plans:
         txt += f"📌 {p['name']} \n 👥 {p['max_users']} کاربر \n 📆 {p['duration_days']} روز \n 💰 {p['price']:,} تومان\n\n"
 
