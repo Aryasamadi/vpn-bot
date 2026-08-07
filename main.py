@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-ربات مدیریت ساب‌لینک v3 – نسخه CAT ULTIMATE (با تشخیص تکراری بر اساس سکرت کد+IP+پورت)
+ربات مدیریت ساب‌لینک v3 – نسخه CAT ULTIMATE (با رفع کامل باگ افزودن ساب‌لینک)
 - افزایش TTL کش محلی به ۱ ساعت
 - افزایش TTL ذخیره‌سازی KV به ۱ روز
 - ایجاد ایندکس روی ستون key در جدول settings
@@ -11,7 +11,8 @@
 - ✅ آمار تعداد کاربران در مدیریت کاربران
 - ✅ مدیریت ساب‌لینک‌های خارجی (افزودن، ویرایش، حذف، دریافت خودکار)
 - ✅ تسک پس‌زمینه برای دریافت خودکار کانفیگ‌ها از ساب‌لینک‌ها (هر ۱ ساعت)
-- ✅ بهینه‌سازی کش و کوئری‌ها برای مصرف کم منابع
+- ✅ رفع باگ: کلمه "لغو" دیگر به‌عنوان دستور لغو کلی در نظر گرفته نمی‌شود (فقط دکمه اینلاین)
+- ✅ تایید و نمایش مستقیم ساب‌لینک افزوده شده
 """
 
 import os
@@ -1089,12 +1090,13 @@ async def create_subscription_from_plan(plan_id, user_id):
     return token
 
 # ---------------------------------------------------------------------
-# 💬 مدیریت state ها (با تغییرات)
+# 💬 مدیریت state ها (با تغییرات مهم)
 # ---------------------------------------------------------------------
 async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_admin):
     text = message.get("text", "").strip()
 
-    if text in ["❌ خروج / اتمام ارسال", "لغو", "/cancel"]:
+    # ========== لغو کلی فقط با /cancel و دکمه خاص (نه با "لغو") ==========
+    if text in ["❌ خروج / اتمام ارسال", "/cancel"]:
         await execute_db("UPDATE users SET state = NULL, plan_data = NULL WHERE id = ?", user["id"])
         await call_telegram("sendMessage", {"chat_id": chat_id, "text": "عملیات لغو شد."})
         if is_admin_user:
@@ -1334,6 +1336,11 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
 
         # ---------- مدیریت ساب‌لینک خارجی – افزودن ----------
         if state == "waiting_sub_source_name":
+            # اگر کاربر "لغو" تایپ کرد، عملیات لغو شود (اما دیگر در لیست کلی نیست)
+            if text == "لغو":
+                await execute_db("UPDATE users SET state = NULL, plan_data = NULL WHERE id = ?", user["id"])
+                await call_telegram("sendMessage", {"chat_id": chat_id, "text": "❌ افزودن ساب‌لینک لغو شد.", "reply_markup": get_admin_inline_keyboard()})
+                return True
             # ذخیره نام موقت
             await execute_db("UPDATE users SET plan_data = ? WHERE id = ?", json.dumps({"name": text}), user["id"])
             await execute_db("UPDATE users SET state = 'waiting_sub_source_url' WHERE id = ?", user["id"])
@@ -1341,7 +1348,10 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
             return True
 
         if state == "waiting_sub_source_url":
-            # دریافت URL و افزودن به دیتابیس
+            if text == "لغو":
+                await execute_db("UPDATE users SET state = NULL, plan_data = NULL WHERE id = ?", user["id"])
+                await call_telegram("sendMessage", {"chat_id": chat_id, "text": "❌ افزودن ساب‌لینک لغو شد.", "reply_markup": get_admin_inline_keyboard()})
+                return True
             plan_data = user.get("plan_data")
             if plan_data:
                 try:
@@ -1352,17 +1362,23 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
             else:
                 name = "بدون نام"
             url = text.strip()
-            # اعتبارسنجی ساده URL
             if not url.startswith("http"):
                 await call_telegram("sendMessage", {"chat_id": chat_id, "text": "❌ لطفاً یک URL معتبر وارد کنید (با http یا https شروع شود):"})
                 return True
-            await execute_db("INSERT INTO subscription_sources (name, url, is_active) VALUES (?, ?, 1)", name, url)
+
+            # ✅ ثبت در دیتابیس با بررسی خطا
+            insert_result = await execute_db("INSERT INTO subscription_sources (name, url, is_active) VALUES (?, ?, 1)", name, url)
+            if insert_result.get("success") is False:
+                logger.error(f"Insert failed: {insert_result}")
+                await call_telegram("sendMessage", {"chat_id": chat_id, "text": f"❌ خطا در ثبت ساب‌لینک: {insert_result.get('error', 'ناشناخته')}", "reply_markup": get_admin_inline_keyboard()})
+                await execute_db("UPDATE users SET state = NULL, plan_data = NULL WHERE id = ?", user["id"])
+                return True
+
             await execute_db("UPDATE users SET state = NULL, plan_data = NULL WHERE id = ?", user["id"])
-            await call_telegram("sendMessage", {
-                "chat_id": chat_id,
-                "text": STRINGS["sub_source_added"].format(name=name),
-                "reply_markup": get_admin_inline_keyboard()
-            })
+            await call_telegram("sendMessage", {"chat_id": chat_id, "text": STRINGS["sub_source_added"].format(name=name), "reply_markup": get_admin_inline_keyboard()})
+
+            # نمایش سریع لیست به‌روز شده
+            await show_sub_source_management(chat_id, None)
             return True
 
         # ---------- ویرایش ساب‌لینک ----------
@@ -1961,11 +1977,16 @@ async def process_callback(callback):
 
     # ---------- مدیریت ساب‌لینک‌های خارجی ----------
     if data == "adm_manage_sub_sources":
+        # اگر کاربر در حالت افزودن بود، state را پاک کن تا گیج نشود
+        if user.get("state") in ["waiting_sub_source_name", "waiting_sub_source_url"]:
+            await execute_db("UPDATE users SET state = NULL, plan_data = NULL WHERE id = ?", user["id"])
         await show_sub_source_management(chat_id, message_id)
         return
 
     # ---------- افزودن ساب‌لینک جدید ----------
     if data == "adm_add_sub_source":
+        # پاک کردن state قبلی
+        await execute_db("UPDATE users SET state = NULL, plan_data = NULL WHERE id = ?", user["id"])
         await execute_db("UPDATE users SET state = 'waiting_sub_source_name', plan_data = NULL WHERE id = ?", user["id"])
         await edit_message(chat_id, message_id, STRINGS["sub_source_add_step1"], reply_markup={"inline_keyboard": [[{"text": "🔙 لغو", "callback_data": "adm_manage_sub_sources"}]]})
         return
@@ -1978,58 +1999,58 @@ async def process_callback(callback):
         return
 
     # ---------- ویرایش ساب‌لینک (URL) ----------
-    if data.startswith("adm_sub_edit_url_"):
-        source_id = data.replace("adm_sub_edit_url_", "")
-        await execute_db("UPDATE users SET state = ? WHERE id = ?", f"waiting_sub_source_edit_url_{source_id}", user["id"])
-        await edit_message(chat_id, message_id, STRINGS["sub_source_edit_url"], reply_markup={"inline_keyboard": [[{"text": "🔙 لغو", "callback_data": "adm_manage_sub_sources"}]]})
-        return
+        if data.startswith("adm_sub_edit_url_"):
+            source_id = data.replace("adm_sub_edit_url_", "")
+            await execute_db("UPDATE users SET state = ? WHERE id = ?", f"waiting_sub_source_edit_url_{source_id}", user["id"])
+            await edit_message(chat_id, message_id, STRINGS["sub_source_edit_url"], reply_markup={"inline_keyboard": [[{"text": "🔙 لغو", "callback_data": "adm_manage_sub_sources"}]]})
+            return
 
-    # ---------- تغییر وضعیت فعال/غیرفعال ----------
-    if data.startswith("adm_sub_toggle_"):
-        source_id = data.replace("adm_sub_toggle_", "")
-        res = await query_db("SELECT is_active FROM subscription_sources WHERE id = ?", source_id)
-        row = get_first_row(res)
-        if row:
-            new_status = 1 if row["is_active"] == 0 else 0
-            await execute_db("UPDATE subscription_sources SET is_active = ? WHERE id = ?", new_status, source_id)
-            await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "✅ وضعیت تغییر کرد."})
+        # ---------- تغییر وضعیت فعال/غیرفعال ----------
+        if data.startswith("adm_sub_toggle_"):
+            source_id = data.replace("adm_sub_toggle_", "")
+            res = await query_db("SELECT is_active FROM subscription_sources WHERE id = ?", source_id)
+            row = get_first_row(res)
+            if row:
+                new_status = 1 if row["is_active"] == 0 else 0
+                await execute_db("UPDATE subscription_sources SET is_active = ? WHERE id = ?", new_status, source_id)
+                await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "✅ وضعیت تغییر کرد."})
+                await show_sub_source_management(chat_id, message_id)
+            else:
+                await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "❌ ساب‌لینک یافت نشد.", "show_alert": True})
+            return
+
+        # ---------- حذف ساب‌لینک ----------
+        if data.startswith("adm_sub_del_"):
+            source_id = data.replace("adm_sub_del_", "")
+            await execute_db("DELETE FROM subscription_sources WHERE id = ?", source_id)
+            await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "🗑 ساب‌لینک حذف شد."})
             await show_sub_source_management(chat_id, message_id)
-        else:
-            await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "❌ ساب‌لینک یافت نشد.", "show_alert": True})
-        return
+            return
 
-    # ---------- حذف ساب‌لینک ----------
-    if data.startswith("adm_sub_del_"):
-        source_id = data.replace("adm_sub_del_", "")
-        await execute_db("DELETE FROM subscription_sources WHERE id = ?", source_id)
-        await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "🗑 ساب‌لینک حذف شد."})
-        await show_sub_source_management(chat_id, message_id)
-        return
+        # ---------- دریافت دستی از یک ساب‌لینک ----------
+        if data.startswith("adm_sub_fetch_"):
+            source_id = data.replace("adm_sub_fetch_", "")
+            await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id})
+            await edit_message(chat_id, message_id, STRINGS["sub_source_fetch_start"])
+            count = await fetch_and_add_configs_from_source(source_id)
+            await edit_message(chat_id, message_id, STRINGS["sub_source_fetch_done"].format(count=count), reply_markup=get_admin_inline_keyboard())
+            return
 
-    # ---------- دریافت دستی از یک ساب‌لینک ----------
-    if data.startswith("adm_sub_fetch_"):
-        source_id = data.replace("adm_sub_fetch_", "")
-        await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id})
-        await edit_message(chat_id, message_id, STRINGS["sub_source_fetch_start"])
-        count = await fetch_and_add_configs_from_source(source_id)
-        await edit_message(chat_id, message_id, STRINGS["sub_source_fetch_done"].format(count=count), reply_markup=get_admin_inline_keyboard())
-        return
+        # ---------- دریافت از همه ساب‌لینک‌ها ----------
+        if data == "adm_sub_fetch_all":
+            await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id})
+            await edit_message(chat_id, message_id, STRINGS["sub_source_fetch_start"])
+            total_count = 0
+            sources_res = await query_db("SELECT id FROM subscription_sources WHERE is_active = 1")
+            sources = get_rows(sources_res)
+            for s in sources:
+                count = await fetch_and_add_configs_from_source(s["id"])
+                total_count += count
+            await edit_message(chat_id, message_id, STRINGS["sub_source_fetch_done"].format(count=total_count), reply_markup=get_admin_inline_keyboard())
+            return
 
-    # ---------- دریافت از همه ساب‌لینک‌ها ----------
-    if data == "adm_sub_fetch_all":
-        await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id})
-        await edit_message(chat_id, message_id, STRINGS["sub_source_fetch_start"])
-        total_count = 0
-        sources_res = await query_db("SELECT id FROM subscription_sources WHERE is_active = 1")
-        sources = get_rows(sources_res)
-        for s in sources:
-            count = await fetch_and_add_configs_from_source(s["id"])
-            total_count += count
-        await edit_message(chat_id, message_id, STRINGS["sub_source_fetch_done"].format(count=total_count), reply_markup=get_admin_inline_keyboard())
-        return
-
-    # ---------- در صورت عدم تطابق ----------
-    await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "❌ دستور نامعتبر", "show_alert": True})
+        # ---------- در صورت عدم تطابق ----------
+        await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "❌ دستور نامعتبر", "show_alert": True})
 
 # ---------------------------------------------------------------------
 # 📨 پردازش پیام
@@ -2220,17 +2241,14 @@ async def fetch_and_add_configs_from_source(source_id):
             lines = [line.strip() for line in decoded.splitlines() if line.strip()]
             count = 0
             for line in lines:
-                # اگر خط به نظر کانفیگ می‌رسد (با vmess, vless, trojan, ...)
                 if any(line.startswith(prefix) for prefix in ["vmess://", "vless://", "trojan://", "ss://", "ssr://"]):
-                    # بررسی تکراری با fingerprint جدید
                     if not await is_duplicate_config(line):
                         formatted = await format_config_name(line)
                         await execute_db("INSERT INTO configs (config_text) VALUES (?)", formatted)
                         count += 1
-            # به‌روزرسانی زمان آخرین دریافت
             now_str = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
             await execute_db("UPDATE subscription_sources SET last_fetch = ? WHERE id = ?", now_str, source_id)
-            await delete_kv("configs_payload")  # invalidate cache
+            await delete_kv("configs_payload")
             return count
     except Exception as e:
         logger.error(f"Error fetching from {url}: {e}")
@@ -2247,7 +2265,7 @@ async def background_subscription_fetcher():
             sources = get_rows(sources_res)
             for s in sources:
                 await fetch_and_add_configs_from_source(s["id"])
-                await asyncio.sleep(1)  # جلوگیری از overload
+                await asyncio.sleep(1)
         except Exception as e:
             logger.error(f"Background fetcher error: {e}")
 
@@ -2263,8 +2281,8 @@ async def startup_event():
     await init_database_if_needed()
     asyncio.create_task(background_config_checker())
     asyncio.create_task(background_expiration_notifier())
-    asyncio.create_task(background_subscription_fetcher())  # <-- تسک جدید
-    logger.info("🚀 Bot Server Started! (CAT ULTIMATE with Secret-based Duplicate Detection)")
+    asyncio.create_task(background_subscription_fetcher())
+    logger.info("🚀 Bot Server Started! (CAT ULTIMATE with Sub‑Source Manager & Stats)")
 
 @app.on_event("shutdown")
 async def shutdown_event():
