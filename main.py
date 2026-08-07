@@ -1968,7 +1968,7 @@ async def handle_sublink(token: str):
         return Response(content="", media_type="text/plain")
 
     days_left = (expires_at - now).days
-    days_left_str = f"{days_left}روز" if days_left >= 0 else "منقضی"
+    days_left_str = f"{days_left}روز" if days_left >= 0 else "منقضی شد"
     plan_id = sub.get("plan_id")
     if plan_id:
         plan_res = await query_db("SELECT duration_days, max_users FROM plans WHERE id = ?", plan_id)
@@ -2007,4 +2007,4 @@ async def handle_sublink(token: str):
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
-    uvicorn.run("main:app", host="0.0.0.0", port=port)
+    uvicorn.run("main:app", host="0.0.0.0", port=port) 
