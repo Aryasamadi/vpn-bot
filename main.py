@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-ربات مدیریت ساب‌لینک v3 – نسخه CAT ULTIMATE (با رفع کامل خطای افزودن ساب‌لینک + نمایش خطای D1)
+ربات مدیریت ساب‌لینک v3 – نسخه CAT ULTIMATE (با رفع قطعی خطای جدول)
 - افزایش TTL کش محلی به ۱ ساعت
 - افزایش TTL ذخیره‌سازی KV به ۱ روز
 - ایجاد ایندکس روی ستون key در جدول settings
@@ -12,6 +12,7 @@
 - ✅ مدیریت ساب‌لینک‌های خارجی با نمایش خطای دقیق
 - ✅ تسک پس‌زمینه دریافت خودکار
 - ✅ رفع مشکل "لغو" – فقط با دکمه اینلاین لغو می‌شود
+- ✅ ایجاد اجباری جدول subscription_sources در هر بار راه‌اندازی
 """
 
 import os
@@ -399,26 +400,11 @@ async def format_config_name(config_text):
     return config_text
 
 # ---------------------------------------------------------------------
-# 🗄️ مقداردهی اولیه دیتابیس
+# 🗄️ مقداردهی اولیه دیتابیس (با ایجاد اجباری جدول)
 # ---------------------------------------------------------------------
 async def init_database_if_needed():
-    initialized = await get_kv("db_initialized_v3_cat")
-    try:
-        await execute_db("ALTER TABLE subscriptions ADD COLUMN notified_level INTEGER DEFAULT 0")
-    except:
-        pass
-
-    banner_exists = await query_db("SELECT id FROM configs WHERE id = 0")
-    if not get_first_row(banner_exists):
-        await execute_db("INSERT INTO configs (id, config_text, is_active, fail_count) VALUES (0, ?, 1, 0)", BANNER_CONFIG)
-        logger.info("Banner config created with id=0")
-    else:
-        await execute_db("UPDATE configs SET is_active = 1, config_text = ? WHERE id = 0", BANNER_CONFIG)
-
-    if initialized == "true":
-        return
-
-    queries = [
+    # بررسی و ایجاد جدول‌ها در هر بار راه‌اندازی (اگر وجود نداشته باشند)
+    tables = [
         """CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             telegram_id TEXT UNIQUE NOT NULL,
@@ -473,10 +459,10 @@ async def init_database_if_needed():
         );"""
     ]
 
-    for q in queries:
+    for q in tables:
         await execute_db(q)
 
-    # تعمیر ساختار جدول (برای نسخه‌های قدیمی)
+    # تعمیر ستون‌ها برای نسخه‌های قدیمی
     try:
         await execute_db("ALTER TABLE subscription_sources ADD COLUMN last_fetch TIMESTAMP")
     except:
@@ -486,16 +472,27 @@ async def init_database_if_needed():
     except:
         pass
 
+    # ایجاد ایندکس
     await execute_db("CREATE INDEX IF NOT EXISTS idx_settings_key ON settings(key);")
 
+    # ایجاد بنر اگر نیست
+    banner_exists = await query_db("SELECT id FROM configs WHERE id = 0")
+    if not get_first_row(banner_exists):
+        await execute_db("INSERT INTO configs (id, config_text, is_active, fail_count) VALUES (0, ?, 1, 0)", BANNER_CONFIG)
+        logger.info("Banner config created with id=0")
+    else:
+        await execute_db("UPDATE configs SET is_active = 1, config_text = ? WHERE id = 0", BANNER_CONFIG)
+
+    # تنظیمات پیش‌فرض
     defaults = {"referral_reward": "2000", "force_channels": ""}
     for key, val in defaults.items():
         res = await query_db("SELECT value FROM settings WHERE key = ?", key)
         if not get_first_row(res):
             await execute_db("INSERT INTO settings (key, value) VALUES (?, ?)", key, val)
 
+    # علامت مقداردهی در KV (برای اطلاعات بیشتر)
     await put_kv("db_initialized_v3_cat", "true")
-    logger.info("Database initialized with v3 schema + index + subscription_sources table")
+    logger.info("Database initialized/verified with all required tables")
 
 # ---------------------------------------------------------------------
 # توابع پس‌زمینه (چکر کانفیگ، یادآور، فچر ساب‌لینک)
@@ -1058,8 +1055,7 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
                 await call_telegram("sendMessage", {"chat_id": chat_id, "text": "✅ محتوای دکمه داینامیک ثبت شد.", "reply_markup": get_admin_inline_keyboard()})
             return True
 
-        # =========================== اصلاح اصلی ===========================
-        # ---------- مدیریت ساب‌لینک خارجی – افزودن (با نمایش خطای دقیق) ----------
+        # ---------- مدیریت ساب‌لینک خارجی – افزودن ----------
         if state == "waiting_sub_source_name":
             if text == "لغو":
                 await execute_db("UPDATE users SET state = NULL, plan_data = NULL WHERE id = ?", user["id"])
@@ -1896,7 +1892,7 @@ async def startup_event():
     asyncio.create_task(background_config_checker())
     asyncio.create_task(background_expiration_notifier())
     asyncio.create_task(background_subscription_fetcher())
-    logger.info("🚀 Bot Server Started! (CAT ULTIMATE with D1 error handling)")
+    logger.info("🚀 Bot Server Started! (CAT ULTIMATE with forced table creation)")
 
 @app.on_event("shutdown")
 async def shutdown_event():
