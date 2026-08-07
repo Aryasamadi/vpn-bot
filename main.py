@@ -1,15 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-ربات مدیریت ساب‌لینک v3 – نسخه CAT ULTIMATE (با مدیریت ساب‌لینک خارجی، آمار، و رفع باگ تکراری)
+ربات مدیریت ساب‌لینک v3 – نسخه CAT ULTIMATE (با تشخیص تکراری بر اساس سکرت کد+IP+پورت)
 - افزایش TTL کش محلی به ۱ ساعت
 - افزایش TTL ذخیره‌سازی KV به ۱ روز
 - ایجاد ایندکس روی ستون key در جدول settings
 - رفع باگ دکمه افزودن پلن
-- حذف دکمه جستجو (غیرضروری)
 - همه حذف‌ها بدون تایید
-- ماندن در صفحه پس از حذف
 - پایان پشتیبانی فقط پاپ‌آپ
-- ✅ تشخیص تکراری بر اساس IP+Port (نه نام)
+- ✅ تشخیص تکراری بر اساس Secret+IP+Port (نه فقط IP+Port)
 - ✅ آمار تعداد کاربران در مدیریت کاربران
 - ✅ مدیریت ساب‌لینک‌های خارجی (افزودن، ویرایش، حذف، دریافت خودکار)
 - ✅ تسک پس‌زمینه برای دریافت خودکار کانفیگ‌ها از ساب‌لینک‌ها (هر ۱ ساعت)
@@ -355,7 +353,7 @@ async def get_channel_pretty_name(ch_id: str) -> str:
     return ch_id
 
 # ---------------------------------------------------------------------
-# 🗄️ مقداردهی اولیه و توابع پردازش کانفیگ
+# 🗄️ استخراج اطلاعات از کانفیگ (با سکرت کد)
 # ---------------------------------------------------------------------
 def extract_ip_from_config(config_text):
     try:
@@ -380,6 +378,94 @@ def extract_port_from_config(config_text):
     except:
         pass
     return 443
+
+def extract_secret_from_config(config_text):
+    """
+    استخراج یک شناسه منحصر‌به‌فرد (سکرت کد) از کانفیگ:
+    - Vmess: id (UUID)
+    - Vless: userinfo (قبل از @)
+    - Trojan: password (بعد از trojan://)
+    - SS: password (بعد از ss://)
+    - SSR: password یا گروه
+    در صورت عدم شناسایی، رشته خالی برمی‌گرداند.
+    """
+    try:
+        if config_text.startswith("vmess://"):
+            decoded = base64.b64decode(config_text[8:]).decode('utf-8')
+            j = json.loads(decoded)
+            return j.get('id', '')
+        elif config_text.startswith("vless://"):
+            # vless://uuid@host:port?params
+            parsed = urllib.parse.urlparse(config_text)
+            # userinfo is the part before @
+            userinfo = parsed.username or ''
+            return userinfo
+        elif config_text.startswith("trojan://"):
+            parsed = urllib.parse.urlparse(config_text)
+            # password is the userinfo
+            return parsed.username or ''
+        elif config_text.startswith("ss://"):
+            # ss://base64(method:password)@host:port
+            # or ss://method:password@host:port
+            # we can try to parse userinfo
+            parsed = urllib.parse.urlparse(config_text)
+            userinfo = parsed.username or ''
+            if userinfo:
+                # maybe it's base64 encoded method:password
+                try:
+                    decoded = base64.b64decode(userinfo).decode('utf-8')
+                    if ':' in decoded:
+                        return decoded.split(':')[1]  # password part
+                except:
+                    # if not base64, it might be method:password
+                    if ':' in userinfo:
+                        return userinfo.split(':')[1]
+            return userinfo
+        elif config_text.startswith("ssr://"):
+            # SSR is base64 encoded
+            try:
+                decoded = base64.b64decode(config_text[6:]).decode('utf-8')
+                parts = decoded.split(':')
+                if len(parts) >= 6:
+                    return parts[5]  # usually the password/group
+            except:
+                pass
+            return ''
+        else:
+            return ''
+    except:
+        return ''
+    return ''
+
+def get_config_fingerprint(config_text):
+    """
+    ترکیبی از سکرت کد + IP + پورت برای تشخیص منحصر‌به‌فرد
+    اگر سکرت کد خالی بود، فقط IP+پورت را برمی‌گرداند (برای کانفیگ‌های قدیمی).
+    """
+    secret = extract_secret_from_config(config_text)
+    ip = extract_ip_from_config(config_text)
+    port = extract_port_from_config(config_text)
+    if secret:
+        return f"{secret}@{ip}:{port}"
+    else:
+        return f"{ip}:{port}"
+
+async def is_duplicate_config(config_text):
+    """
+    بررسی تکراری بر اساس fingerprint (سکرت کد + IP + پورت)
+    """
+    fp = get_config_fingerprint(config_text)
+    if not fp:
+        return False  # نمی‌توان تشخیص داد
+    # جستجوی تمام کانفیگ‌ها و مقایسه fingerprint
+    res = await query_db("SELECT config_text FROM configs")
+    rows = get_rows(res)
+    for row in rows:
+        existing = row["config_text"]
+        existing_fp = get_config_fingerprint(existing)
+        if existing_fp == fp:
+            return True
+    return False
 
 def extract_config_name(config_text):
     """استخراج نام کانفیگ (ps برای vmess، fragment برای vless و غیره)"""
@@ -431,22 +517,6 @@ async def format_config_name(config_text):
     except:
         pass
     return config_text
-
-# ---------- تشخیص تکراری بر اساس IP+Port ----------
-async def is_duplicate_config(config_text):
-    """بررسی می‌کند که آیا کانفیگ با همان IP و Port قبلاً در دیتابیس وجود دارد (نادیده گرفتن نام)"""
-    ip = extract_ip_from_config(config_text)
-    port = extract_port_from_config(config_text)
-    if not ip:
-        return False  # نمی‌توان تشخیص داد
-    # جستجوی تمام کانفیگ‌های فعال (و حتی غیرفعال) که IP و Port یکسان دارند
-    res = await query_db("SELECT config_text FROM configs")
-    rows = get_rows(res)
-    for row in rows:
-        existing = row["config_text"]
-        if extract_ip_from_config(existing) == ip and extract_port_from_config(existing) == port:
-            return True
-    return False
 
 # ---------------------------------------------------------------------
 # 🗄️ مقداردهی اولیه دیتابیس (با جدول ساب‌لینک)
@@ -1037,7 +1107,7 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
     if is_admin_user:
         # ---------- افزودن کانفیگ به صورت زنجیره‌ای (با تشخیص تکراری جدید) ----------
         if state == "waiting_for_config":
-            # بررسی تکراری با IP+Port
+            # بررسی تکراری با fingerprint جدید
             if await is_duplicate_config(text):
                 await execute_db("UPDATE users SET plan_data = ? WHERE id = ?", json.dumps({"config_text": text, "action": "add"}), user["id"])
                 await execute_db("UPDATE users SET state = 'waiting_for_dup_decision' WHERE id = ?", user["id"])
@@ -1288,7 +1358,11 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
                 return True
             await execute_db("INSERT INTO subscription_sources (name, url, is_active) VALUES (?, ?, 1)", name, url)
             await execute_db("UPDATE users SET state = NULL, plan_data = NULL WHERE id = ?", user["id"])
-            await call_telegram("sendMessage", {"chat_id": chat_id, "text": STRINGS["sub_source_added"].format(name=name), "reply_markup": get_admin_inline_keyboard()})
+            await call_telegram("sendMessage", {
+                "chat_id": chat_id,
+                "text": STRINGS["sub_source_added"].format(name=name),
+                "reply_markup": get_admin_inline_keyboard()
+            })
             return True
 
         # ---------- ویرایش ساب‌لینک ----------
@@ -2148,7 +2222,7 @@ async def fetch_and_add_configs_from_source(source_id):
             for line in lines:
                 # اگر خط به نظر کانفیگ می‌رسد (با vmess, vless, trojan, ...)
                 if any(line.startswith(prefix) for prefix in ["vmess://", "vless://", "trojan://", "ss://", "ssr://"]):
-                    # بررسی تکراری
+                    # بررسی تکراری با fingerprint جدید
                     if not await is_duplicate_config(line):
                         formatted = await format_config_name(line)
                         await execute_db("INSERT INTO configs (config_text) VALUES (?)", formatted)
@@ -2190,7 +2264,7 @@ async def startup_event():
     asyncio.create_task(background_config_checker())
     asyncio.create_task(background_expiration_notifier())
     asyncio.create_task(background_subscription_fetcher())  # <-- تسک جدید
-    logger.info("🚀 Bot Server Started! (CAT ULTIMATE with Sub‑Source Manager & Stats)")
+    logger.info("🚀 Bot Server Started! (CAT ULTIMATE with Secret-based Duplicate Detection)")
 
 @app.on_event("shutdown")
 async def shutdown_event():
