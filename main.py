@@ -1958,6 +1958,106 @@ async def process_callback(callback):
     await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "❌ دستور نامعتبر", "show_alert": True})
 
 # ---------------------------------------------------------------------
+# 📨 پردازش پیام
+# ---------------------------------------------------------------------
+async def process_message(message):
+    chat_id = message["chat"]["id"]
+    text = message.get("text", "").strip()
+    from_user = message.get("from", {})
+    telegram_id = str(from_user.get("id", ""))
+    if not telegram_id:
+        return
+
+    referred_by = None
+    if text.startswith("/start ") and len(text.split()) > 1:
+        referred_by = text.split()[1]
+
+    user = await get_or_create_user(telegram_id, referred_by, from_user=from_user)
+    actual_is_admin = is_admin(telegram_id, user_data=None)
+    is_admin_user = is_admin(telegram_id, user_data=user)
+
+    if text.startswith("/start"):
+        user["state"] = None
+        user["plan_data"] = None
+        await execute_db("UPDATE users SET state = NULL, plan_data = NULL WHERE id = ?", user["id"])
+
+        await credit_referrer_if_pending(user, chat_id)
+        if is_admin_user:
+            await show_admin_panel(chat_id)
+        else:
+            markup = await get_user_inline_keyboard(actual_is_admin)
+            await call_telegram("sendMessage", {
+                "chat_id": chat_id,
+                "text": STRINGS["start_welcome"],
+                "reply_markup": markup
+            })
+        return
+
+    if text in ["/admin", "admin", "مدیریت"] and actual_is_admin:
+        await execute_db("UPDATE users SET state = NULL, plan_data = NULL, is_test_mode = 0 WHERE id = ?", user["id"])
+        await show_admin_panel(chat_id)
+        return
+
+    if actual_is_admin and message.get("reply_to_message"):
+        replied_text = message["reply_to_message"].get("text", "") or message["reply_to_message"].get("caption", "")
+        if "پیام از کاربر" in replied_text:
+            match = re.search(r"پیام از کاربر (\d+):", replied_text)
+            if match:
+                target_id = match.group(1)
+                payload = {"chat_id": target_id}
+                method = "sendMessage"
+                if text:
+                    payload["text"] = f"پاسخ پشتیبانی:\n\n{text}"
+                elif message.get("photo"):
+                    method = "sendPhoto"
+                    payload["photo"] = message["photo"][-1]["file_id"]
+                    payload["caption"] = f"پاسخ پشتیبانی:\n{message.get('caption', '')}"
+                elif message.get("document"):
+                    method = "sendDocument"
+                    payload["document"] = message["document"]["file_id"]
+                    payload["caption"] = f"پاسخ پشتیبانی:\n{message.get('caption', '')}"
+                await call_telegram(method, payload)
+                await call_telegram("sendMessage", {"chat_id": chat_id, "text": "✅ پاسخ شما به کاربر ارسال شد."})
+                return
+
+    if not await check_channel_membership(telegram_id, force_refresh=False):
+        await send_membership_requirement(chat_id)
+        return
+
+    state = user.get("state")
+    if state:
+        if await handle_state(user, state, message, chat_id, is_admin_user, actual_is_admin):
+            return
+
+    if text.startswith("/"):
+        markup = get_admin_inline_keyboard() if is_admin_user else await get_user_inline_keyboard(actual_is_admin)
+        await call_telegram("sendMessage", {
+            "chat_id": chat_id,
+            "text": "❌ دستور ناشناس است. لطفاً از دکمه‌های منوی اصلی استفاده کنید.",
+            "reply_markup": markup
+        })
+    else:
+        markup = get_admin_inline_keyboard() if is_admin_user else await get_user_inline_keyboard(actual_is_admin)
+        await call_telegram("sendMessage", {
+            "chat_id": chat_id,
+            "text": "❌ دستور ناشناس است. لطفاً از دکمه‌های منوی اصلی استفاده کنید.",
+            "reply_markup": markup
+        })
+
+# ---------------------------------------------------------------------
+# 🚀 تابع پردازش اصلی (که قبلاً گم شده بود)
+# ---------------------------------------------------------------------
+async def process_update(update):
+    try:
+        if "message" in update:
+            await process_message(update["message"])
+        elif "callback_query" in update:
+            await process_callback(update["callback_query"])
+    except Exception:
+        logger.error("Error in process_update:")
+        traceback.print_exc()
+
+# ---------------------------------------------------------------------
 # نمایش پلن‌ها
 # ---------------------------------------------------------------------
 async def show_plan_management(chat_id, message_id=None):
@@ -2162,6 +2262,16 @@ async def handle_sublink(token: str):
     }
 
     return Response(content=cached_payload, media_type="text/plain", headers=headers)
+
+# ---------------------------------------------------------------------
+# پنل ادمین (برای نمایش)
+# ---------------------------------------------------------------------
+async def show_admin_panel(chat_id):
+    await call_telegram("sendMessage", {
+        "chat_id": chat_id,
+        "text": STRINGS["admin_panel"],
+        "reply_markup": get_admin_inline_keyboard()
+    })
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
