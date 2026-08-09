@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-ربات مدیریت ساب‌لینک v3 – نسخه CAT ULTIMATE (رفع کامل خطای فایل و هشدارها)
+ربات مدیریت ساب‌لینک v3 – نسخه CAT ULTIMATE (رفع کامل تست پروکسی)
 - مدیریت پروکسی‌های HTTP/SOCKS4/SOCKS5
 - تست کانفیگ‌ها از طریق پروکسی‌ها
 - حالت ایمن با تست مستقیم خارج
 - اولویت‌بندی کانفیگ‌ها بر اساس سرعت
 - دستور /status با داشبورد کامل
-- ✅ دریافت و تست دسته‌جمعی پروکسی از فایل/متن
+- ✅ دریافت و تست دسته‌جمعی پروکسی از فایل/متن (رفع کامل)
 - ✅ رفع خطای message_id
 - ✅ کاهش هشدارهای تکراری به ۳ ساعت
 - حفظ تمام قابلیت‌های قبلی
@@ -155,9 +155,9 @@ STRINGS = {
     "proxy_no_active": "🚨 هیچ پروکسی فعالی وجود ندارد. ربات وارد حالت ایمن شد.",
     "proxy_restored": "✅ پروکسی جدید فعال شد. ربات از حالت ایمن خارج شد.",
     "proxy_delete_confirm": "آیا از حذف این پروکسی اطمینان دارید؟",
-    "batch_test_start": "⏳ در حال تست {total} پروکسی... لطفاً صبر کنید.",
+    "batch_test_start": "⏳ در حال تست {total} پروکسی... لطفاً صبر کنید. (حداکثر {max_concurrent} تا همزمان)",
     "batch_test_result": "📊 **نتیجه تست پروکسی‌ها**\n\n🔢 کل: {total}\n✅ قبول‌شده (ایران + فعال): {accepted}\n❌ ردشده: {rejected}\n\n📋 لیست قبول‌شده‌ها:\n{accepted_list}\n\n❌ دلایل رد:\n{rejected_reasons}",
-    "batch_test_no_result": "❌ هیچ پروکسی معتبری در لیست شما یافت نشد.",
+    "batch_test_no_result": "❌ هیچ پروکسی معتبری در لیست شما یافت نشد.\n\n🔍 دلایل احتمالی:\n- پروکسی‌ها همگی غیرفعال هستند.\n- آی‌پی‌ها خارج از ایران هستند.\n- خطا در فرمت لیست (حتماً به‌صورت `ip:port` باشد).",
     "batch_test_error": "❌ خطا در پردازش لیست. لطفاً دوباره تلاش کنید.",
     "batch_file_processing": "⏳ در حال پردازش فایل... لطفاً صبر کنید.",
     "batch_file_download_error": "❌ خطا در دانلود فایل. لطفاً دوباره تلاش کنید.",
@@ -218,6 +218,8 @@ async def call_telegram(method, payload):
         return {"ok": False, "description": str(e)}
 
 async def edit_message(chat_id, message_id, text, reply_markup=None, parse_mode=None):
+    if not message_id:
+        return await call_telegram("sendMessage", {"chat_id": chat_id, "text": text, "reply_markup": reply_markup, "parse_mode": parse_mode})
     payload = {"chat_id": chat_id, "message_id": message_id, "text": text}
     if reply_markup:
         payload["reply_markup"] = reply_markup
@@ -286,7 +288,7 @@ async def set_setting(key, value):
     set_local_cache(f"setting_{key}", str(value), 3600)
 
 # ---------------------------------------------------------------------
-# استخراج اطلاعات کانفیگ
+# استخراج اطلاعات کانفیگ (همان)
 # ---------------------------------------------------------------------
 def extract_ip_from_config(config_text):
     try:
@@ -525,7 +527,7 @@ async def test_config_direct(config_text: str) -> tuple:
         return False, 0
 
 # ---------------------------------------------------------------------
-# 🧪 قابلیت جدید: تست دسته‌جمعی پروکسی از لیست
+# 🧪 قابلیت جدید: تست دسته‌جمعی پروکسی از لیست (رفع کامل)
 # ---------------------------------------------------------------------
 def parse_proxy_list(raw_text: str) -> list:
     lines = raw_text.strip().splitlines()
@@ -562,10 +564,12 @@ def parse_proxy_list(raw_text: str) -> list:
         elif line.startswith("socks5://"):
             proxy_type = "socks5"
             address = line[9:]
+        # اگر فرمت "ip port" بود (با فاصله)
         if " " in address and ":" not in address:
             parts = address.split()
             if len(parts) == 2 and parts[1].isdigit():
                 address = f"{parts[0]}:{parts[1]}"
+        # اگر فقط "ip:port" بود
         if ":" in address:
             proxies.append({"address": address, "type": proxy_type})
     return proxies
@@ -707,13 +711,12 @@ async def init_database_if_needed():
 # 🔄 تسک‌های پس‌زمینه (با کاهش هشدارها)
 # ---------------------------------------------------------------------
 _last_proxy_alert_time = 0
-_proxy_alert_silenced = False
 
 async def background_proxy_checker():
-    global _last_proxy_alert_time, _proxy_alert_silenced
+    global _last_proxy_alert_time
     last_status_was_active = False
     while True:
-        await asyncio.sleep(300)  # هر ۵ دقیقه چک کن
+        await asyncio.sleep(300)
         try:
             proxies_res = await query_db("SELECT id, name, address, type, is_active FROM proxies")
             proxies = get_rows(proxies_res)
@@ -733,9 +736,8 @@ async def background_proxy_checker():
                         await send_admin_alert(msg)
             total, active, inactive, weak = await get_proxy_count()
             now = time.time()
-            # فقط اگر وضعیت تغییر کرده یا ۳ ساعت گذشته باشد
             if active == 0:
-                if last_status_was_active or (now - _last_proxy_alert_time) > 10800:  # ۳ ساعت
+                if last_status_was_active or (now - _last_proxy_alert_time) > 10800:
                     await send_admin_alert(STRINGS["proxy_no_active"])
                     _last_proxy_alert_time = now
                     last_status_was_active = False
@@ -857,7 +859,7 @@ async def send_admin_alert(text):
         await call_telegram("sendMessage", {"chat_id": int(admin_id), "text": text, "parse_mode": "Markdown"})
 
 # ---------------------------------------------------------------------
-# 👤 توابع کاربر و ادمین
+# 👤 توابع کاربر و ادمین (همان)
 # ---------------------------------------------------------------------
 def is_admin(telegram_id, user_data=None):
     if not ADMIN_IDS:
@@ -1140,7 +1142,7 @@ async def create_subscription_from_plan(plan_id, user_id):
     return token
 
 # ---------------------------------------------------------------------
-# 💬 مدیریت state ها (با رفع خطای message_id)
+# 💬 مدیریت state ها (با رفع کامل)
 # ---------------------------------------------------------------------
 async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_admin):
     text = message.get("text", "").strip()
@@ -1157,7 +1159,7 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
         return True
 
     if is_admin_user:
-        # ---------- مدیریت دسته‌جمعی پروکسی (با پشتیبانی از فایل و متن) ----------
+        # ---------- مدیریت دسته‌جمعی پروکسی ----------
         if state == "waiting_for_batch_proxy":
             # اگر فایل ارسال شده
             if message.get("document"):
@@ -1198,7 +1200,7 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
                 return True
 
             # تست همزمان
-            await call_telegram("sendMessage", {"chat_id": chat_id, "text": STRINGS["batch_test_start"].format(total=len(proxy_list))})
+            await call_telegram("sendMessage", {"chat_id": chat_id, "text": STRINGS["batch_test_start"].format(total=len(proxy_list), max_concurrent=20)})
             result = await batch_test_proxies(proxy_list)
 
             # ذخیره پروکسی‌های قبول‌شده
