@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-ربات مدیریت ساب‌لینک – نسخه CAT FINAL (رفع خطای 400 و بهبود دریافت ساب‌لینک)
+ربات مدیریت ساب‌لینک – نسخه CAT FINAL (رفع کامل دکمه تست و دریافت)
 - مدیریت پروکسی‌های HTTP/SOCKS4/SOCKS5 با صفحه‌بندی و نام‌گذاری ساده
 - تست کانفیگ‌ها از طریق پروکسی‌های ایران (اتصال TCP از طریق پروکسی)
 - دریافت ساب‌لینک (در صورت نبود پروکسی، از اتصال مستقیم استفاده می‌کند)
@@ -15,7 +15,8 @@
 - چینش ۲-۲ در کیبوردها
 - حذف تکی کانفیگ‌ها در مدیریت کانفیگ
 - دکمه دریافت اختصاصی برای هر ساب‌لینک (به‌جای وضعیت)
-- رفع خطای 400 در دریافت ساب‌لینک (استفاده از اتصال مستقیم در صورت نبود پروکسی)
+- رفع خطای 400 با استفاده از اتصال مستقیم در صورت شکست پروکسی
+- رفع دکمه تست و دریافت لیست (استفاده از sendMessage به‌جای editMessage)
 """
 
 import os
@@ -305,7 +306,7 @@ async def set_setting(key, value):
     set_local_cache(f"setting_{key}", str(value), 3600)
 
 # ---------------------------------------------------------------------
-# استخراج اطلاعات کانفیگ (بدون تغییر)
+# استخراج اطلاعات کانفیگ
 # ---------------------------------------------------------------------
 def extract_ip_from_config(config_text):
     try:
@@ -436,7 +437,7 @@ async def format_config_name(config_text):
     return config_text
 
 # ---------------------------------------------------------------------
-# 🔌 توابع مدیریت پروکسی (بدون تغییر)
+# 🔌 توابع مدیریت پروکسی
 # ---------------------------------------------------------------------
 async def test_proxy(proxy_address: str, proxy_type: str = "http") -> tuple:
     try:
@@ -877,7 +878,7 @@ async def background_daily_report():
             logger.error(f"Daily report error: {e}")
 
 # ---------------------------------------------------------------------
-# 📥 دریافت کانفیگ از ساب‌لینک (رفع خطای 400 با استفاده از اتصال مستقیم در صورت نبود پروکسی)
+# 📥 دریافت کانفیگ از ساب‌لینک (رفع خطای 400 با دو بار تلاش: پروکسی و سپس مستقیم)
 # ---------------------------------------------------------------------
 async def fetch_and_add_configs_from_source(source_id):
     res = await query_db("SELECT url FROM subscription_sources WHERE id = ?", source_id)
@@ -887,8 +888,10 @@ async def fetch_and_add_configs_from_source(source_id):
     url = row["url"]
 
     proxies = await get_active_proxies()
-    client = None
+    content = None
     use_proxy = False
+
+    # تلاش اول: با پروکسی (اگر موجود باشد)
     if proxies:
         proxy = proxies[0]
         proxy_url = f"{proxy['type']}://{proxy['address']}"
@@ -897,55 +900,63 @@ async def fetch_and_add_configs_from_source(source_id):
                 client = httpx.AsyncClient(proxy=proxy_url, timeout=20.0)
             except Exception:
                 client = httpx.AsyncClient(proxies={"all://": proxy_url}, timeout=20.0)
-            use_proxy = True
+            async with client:
+                response = await client.get(url, timeout=20.0)
+                if response.status_code == 200:
+                    content = response.text
+                    use_proxy = True
+                    logger.info(f"Successfully fetched {url} via proxy {proxy_url}")
+                else:
+                    logger.warning(f"Proxy fetch failed with status {response.status_code}, trying direct...")
         except Exception as e:
-            logger.warning(f"Failed to create proxy client: {e}")
-            client = None
-            use_proxy = False
-    else:
-        await send_admin_alert(STRINGS["fetch_direct_warning"])
-        client = http_client  # استفاده از http_client اصلی (بدون پروکسی)
+            logger.warning(f"Proxy fetch error: {e}, trying direct...")
 
-    if client is None and not use_proxy:
-        client = http_client
+    # اگر با پروکسی موفق نشد، مستقیم امتحان کن
+    if content is None:
+        await send_admin_alert(f"⚠️ دریافت از {url} با پروکسی موفق نشد. در حال تلاش مستقیم (خارج از ایران).")
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                response = await client.get(url, timeout=20.0)
+                if response.status_code == 200:
+                    content = response.text
+                    logger.info(f"Successfully fetched {url} directly")
+                else:
+                    error_msg = f"HTTP {response.status_code}"
+                    logger.error(f"Direct fetch failed: {error_msg}")
+                    await send_admin_alert(f"❌ دریافت ساب‌لینک با خطا مواجه شد: {error_msg}")
+                    return 0
+        except Exception as e:
+            logger.error(f"Direct fetch error: {e}")
+            await send_admin_alert(f"❌ خطا در دریافت ساب‌لینک: {str(e)}")
+            return 0
 
+    # پردازش محتوا
     try:
-        async with client if hasattr(client, '__aenter__') else client:
-            response = await client.get(url, timeout=20.0)
-            if response.status_code != 200:
-                error_msg = f"HTTP {response.status_code}"
-                logger.error(f"Failed to fetch {url}: {error_msg}")
-                await send_admin_alert(f"❌ دریافت ساب‌لینک با خطا مواجه شد: {error_msg}")
-                return 0
-            content = response.text
-            try:
-                decoded = base64.b64decode(content).decode('utf-8')
-            except:
-                decoded = content
-            lines = [line.strip() for line in decoded.splitlines() if line.strip()]
-            count = 0
-            for line in lines:
-                if any(line.startswith(p) for p in ["vmess://", "vless://", "trojan://", "ss://", "ssr://"]):
-                    if await is_duplicate_config(line):
-                        continue
-                    success, avg_latency, _ = await test_config_with_all_proxies(line)
-                    if success:
-                        formatted = await format_config_name(line)
-                        await execute_db("INSERT INTO configs (config_text, speed_score) VALUES (?, ?)", formatted, avg_latency)
-                        count += 1
-            now_str = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-            await execute_db("UPDATE subscription_sources SET last_fetch = ? WHERE id = ?", now_str, source_id)
-            await delete_kv("configs_payload")
-            return count
-    except httpx.HTTPStatusError as e:
-        error_detail = f"HTTP {e.response.status_code}"
-        logger.error(f"HTTP error fetching {url}: {error_detail}")
-        await send_admin_alert(f"❌ خطا در دریافت ساب‌لینک: {error_detail}")
-        return 0
-    except Exception as e:
-        logger.error(f"Error fetching from {url}: {e}")
-        await send_admin_alert(f"❌ خطا در دریافت ساب‌لینک: {str(e)}")
-        return 0
+        decoded = base64.b64decode(content).decode('utf-8')
+    except:
+        decoded = content
+    lines = [line.strip() for line in decoded.splitlines() if line.strip()]
+    count = 0
+    for line in lines:
+        if any(line.startswith(p) for p in ["vmess://", "vless://", "trojan://", "ss://", "ssr://"]):
+            if await is_duplicate_config(line):
+                continue
+            # تست کانفیگ با پروکسی‌های فعال (اگر موجود باشند)
+            if proxies:
+                success, avg_latency, _ = await test_config_with_all_proxies(line)
+                if success:
+                    formatted = await format_config_name(line)
+                    await execute_db("INSERT INTO configs (config_text, speed_score) VALUES (?, ?)", formatted, avg_latency)
+                    count += 1
+            else:
+                # اگر هیچ پروکسی فعالی نیست، مستقیم اضافه کن (اما با هشدار)
+                formatted = await format_config_name(line)
+                await execute_db("INSERT INTO configs (config_text, speed_score) VALUES (?, ?)", formatted, 0)
+                count += 1
+    now_str = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    await execute_db("UPDATE subscription_sources SET last_fetch = ? WHERE id = ?", now_str, source_id)
+    await delete_kv("configs_payload")
+    return count
 
 # ---------------------------------------------------------------------
 # 📥 تسک پس‌زمینه برای دریافت خودکار از ساب‌لینک‌ها
@@ -1246,7 +1257,7 @@ async def create_subscription_from_plan(plan_id, user_id):
     return token
 
 # ---------------------------------------------------------------------
-# 💬 مدیریت state ها (با اصلاح دکمه دریافت دسته‌جمعی)
+# 💬 مدیریت state ها
 # ---------------------------------------------------------------------
 async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_admin):
     text = message.get("text", "").strip()
@@ -1608,7 +1619,7 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
     return False
 
 # ---------------------------------------------------------------------
-# 📞 پردازش Callback (با اصلاح دکمه‌های دریافت و حذف پیام)
+# 📞 پردازش Callback
 # ---------------------------------------------------------------------
 async def process_callback(callback):
     cq_id = callback["id"]
@@ -1910,7 +1921,7 @@ async def process_callback(callback):
         await edit_message(chat_id, message_id, "🔚 عملیات تست لیست پایان یافت.", reply_markup=get_admin_inline_keyboard())
         return
 
-    # ----- مدیریت کانفیگ‌ها (با حذف تکی) -----
+    # ----- مدیریت کانفیگ‌ها -----
     if data == "adm_manage_configs":
         await show_config_management(chat_id, message_id, page=1)
         return
@@ -1932,7 +1943,6 @@ async def process_callback(callback):
         await show_config_management(chat_id, message_id, page=1)
         return
 
-    # حذف تکی کانفیگ (با کالبک adm_cfg_del_immediate)
     if data.startswith("adm_cfg_del_immediate_"):
         parts = data.split("_")
         if len(parts) >= 5:
@@ -2176,10 +2186,9 @@ async def process_callback(callback):
         await edit_message(chat_id, message_id, STRINGS["sub_source_edit_url"], reply_markup={"inline_keyboard": [[{"text": "🔙 لغو", "callback_data": "adm_manage_sub_sources"}]]})
         return
 
-    # دکمه دریافت از این ساب‌لینک (جایگزین دکمه وضعیت)
+    # دکمه دریافت از این ساب‌لینک
     if data.startswith("adm_sub_fetch_"):
         source_id = data.replace("adm_sub_fetch_", "")
-        # دریافت نام ساب‌لینک برای نمایش در پیام
         source_res = await query_db("SELECT name FROM subscription_sources WHERE id = ?", source_id)
         source_row = get_first_row(source_res)
         source_name = source_row["name"] if source_row else f"#{source_id}"
@@ -2188,7 +2197,6 @@ async def process_callback(callback):
         count = await fetch_and_add_configs_from_source(source_id)
         if count is None:
             count = 0
-        # بعد از دریافت، نمایش نتیجه
         if count > 0:
             await edit_message(chat_id, message_id, STRINGS["sub_source_fetch_done"].format(count=count), reply_markup=get_admin_inline_keyboard())
         else:
@@ -2202,7 +2210,6 @@ async def process_callback(callback):
         await show_sub_source_management(chat_id, message_id)
         return
 
-    # دکمه دریافت از همه (با عنوان اختصاصی)
     if data == "adm_sub_fetch_all":
         await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id})
         await edit_message(chat_id, message_id, STRINGS["sub_source_fetch_start"])
@@ -2219,7 +2226,7 @@ async def process_callback(callback):
     await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "❌ دستور نامعتبر", "show_alert": True})
 
 # ---------------------------------------------------------------------
-# توابع نمایش (با صفحه‌بندی و حذف تکی کانفیگ)
+# توابع نمایش
 # ---------------------------------------------------------------------
 async def show_proxy_management(chat_id, message_id=None, page=1):
     limit = 5
@@ -2289,14 +2296,12 @@ async def show_config_management(chat_id, message_id=None, page=1):
         kb.append({"text": "▶️ بعدی", "callback_data": f"adm_configs_page_{page+1}"})
     row_nav = [kb] if kb else []
 
-    # دکمه‌های اضافی: افزودن، حذف همه، بازگشت
     action_buttons = [
         [{"text": "➕ افزودن کانفیگ", "callback_data": "adm_add_config"}],
         [{"text": "🗑 حذف همه کانفیگ‌ها", "callback_data": "adm_config_delete_all"}],
         [{"text": "🔙 بازگشت", "callback_data": "admin_return"}]
     ]
 
-    # دکمه‌های حذف تکی برای هر کانفیگ (به جز بنر)
     delete_buttons = []
     for c in configs:
         if c['id'] != 0:
@@ -2309,7 +2314,6 @@ async def show_config_management(chat_id, message_id=None, page=1):
     else:
         await call_telegram("sendMessage", {"chat_id": chat_id, "text": txt, "reply_markup": {"inline_keyboard": keyboard}, "parse_mode": "Markdown"})
 
-# بقیه توابع نمایش (پلن‌ها، ساب‌لینک‌ها با دکمه دریافت)
 async def show_plan_management(chat_id, message_id=None):
     res = await query_db("SELECT * FROM plans ORDER BY id DESC")
     plans = get_rows(res)
@@ -2347,7 +2351,6 @@ async def show_sub_source_management(chat_id, message_id=None):
             status = "✅ فعال" if s["is_active"] else "❌ غیرفعال"
             last_fetch = s["last_fetch"] or "هرگز"
             txt += f"🆔 {s['id']} | نام: {s['name']}\nURL: {s['url']}\nوضعیت: {status} | آخرین دریافت: {last_fetch}\n\n"
-            # دکمه‌های عملیاتی (بدون دکمه وضعیت)
             row = [
                 {"text": "✏️ نام", "callback_data": f"adm_sub_edit_name_{s['id']}"},
                 {"text": "✏️ URL", "callback_data": f"adm_sub_edit_url_{s['id']}"},
@@ -2524,7 +2527,7 @@ async def handle_webhook(request: Request):
     return Response(content="OK", status_code=200)
 
 # =====================================================================
-# 🔥 سرویس ساب‌لینک (با اولویت‌بندی بر اساس سرعت)
+# 🔥 سرویس ساب‌لینک
 # =====================================================================
 @app.get("/sub/{token}")
 async def handle_sublink(token: str):
