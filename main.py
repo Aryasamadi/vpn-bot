@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-ربات مدیریت ساب‌لینک v3 – نسخه CAT ULTIMATE (با قابلیت تست دسته‌جمعی پروکسی)
+ربات مدیریت ساب‌لینک v3 – نسخه CAT ULTIMATE (نهایی با رفع کامل باگ فایل و هشدار)
 - مدیریت پروکسی‌های HTTP/SOCKS4/SOCKS5 با آی‌پی ایران
 - تست کانفیگ‌ها از طریق پروکسی‌ها (لحظه‌ای و دوره‌ای)
 - حالت ایمن با تست مستقیم خارج و تگ awaiting_retest
@@ -8,6 +8,9 @@
 - دستور /status با داشبورد کامل
 - گزارش‌های هوشمند (فقط رویدادهای مهم)
 - ✅ قابلیت جدید: دریافت لیست پروکسی (فایل/متن/JSON) و تست همزمان همه
+- ✅ رفع کامل باگ دانلود و پردازش فایل
+- ✅ کاهش هشدارهای تکراری به هر ۳ ساعت
+- ✅ نمایش پیام وضعیت در حین پردازش
 - حفظ تمام قابلیت‌های قبلی
 """
 
@@ -159,6 +162,8 @@ STRINGS = {
     "batch_test_result": "📊 **نتیجه تست پروکسی‌ها**\n\n🔢 کل: {total}\n✅ قبول‌شده (ایران + فعال): {accepted}\n❌ ردشده: {rejected}\n\n📋 لیست قبول‌شده‌ها:\n{accepted_list}\n\n❌ دلایل رد:\n{rejected_reasons}",
     "batch_test_no_result": "❌ هیچ پروکسی معتبری در لیست شما یافت نشد.",
     "batch_test_error": "❌ خطا در پردازش لیست. لطفاً دوباره تلاش کنید.",
+    "batch_file_processing": "⏳ در حال دانلود و پردازش فایل... لطفاً صبر کنید.",
+    "batch_file_error": "❌ خطا در دانلود یا خواندن فایل. لطفاً دوباره تلاش کنید.",
 }
 
 # ---------------------------------------------------------------------
@@ -719,11 +724,14 @@ async def init_database_if_needed():
     logger.info("Database initialized/verified with all required tables")
 
 # ---------------------------------------------------------------------
-# 🔄 تسک‌های پس‌زمینه
+# 🔄 تسک‌های پس‌زمینه (با کاهش هشدار)
 # ---------------------------------------------------------------------
+_last_proxy_warning = 0  # برای کنترل هشدار
+
 async def background_proxy_checker():
+    global _last_proxy_warning
     while True:
-        await asyncio.sleep(300)
+        await asyncio.sleep(300)  # هر ۵ دقیقه چک کن
         try:
             proxies_res = await query_db("SELECT id, name, address, type, is_active FROM proxies")
             proxies = get_rows(proxies_res)
@@ -742,10 +750,19 @@ async def background_proxy_checker():
                         msg = STRINGS["proxy_birth_report"].format(name=p["name"], score=new_score)
                         await send_admin_alert(msg)
             total, active, inactive, weak = await get_proxy_count()
+            current_time = time.time()
             if active == 0:
-                await send_admin_alert(STRINGS["proxy_no_active"])
+                # فقط اگر ۳ ساعت از آخرین هشدار گذشته باشد
+                if current_time - _last_proxy_warning > 10800:  # ۳ ساعت
+                    await send_admin_alert(STRINGS["proxy_no_active"])
+                    _last_proxy_warning = current_time
             elif active == 1:
-                await send_admin_alert(STRINGS["proxy_low_warning"].format(count=active))
+                if current_time - _last_proxy_warning > 10800:
+                    await send_admin_alert(STRINGS["proxy_low_warning"].format(count=active))
+                    _last_proxy_warning = current_time
+            else:
+                # اگر حداقل ۲ تا فعال باشه، هشدار رو ریست کن تا دوباره شروع کنه
+                _last_proxy_warning = 0
         except Exception as e:
             logger.error(f"Proxy checker error: {e}")
 
@@ -1140,7 +1157,7 @@ async def create_subscription_from_plan(plan_id, user_id):
     return token
 
 # ---------------------------------------------------------------------
-# 💬 مدیریت state ها (با اضافه شدن قابلیت دسته‌جمعی)
+# 💬 مدیریت state ها (با اضافه شدن قابلیت دسته‌جمعی و رفع باگ فایل)
 # ---------------------------------------------------------------------
 async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_admin):
     text = message.get("text", "").strip()
@@ -1158,30 +1175,45 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
     if is_admin_user:
         # ---------- مدیریت دسته‌جمعی پروکسی ----------
         if state == "waiting_for_batch_proxy":
-            # دریافت متن یا فایل
-            if message.get("document"):
-                # اگر فایل بود، دانلود کن
-                file_id = message["document"]["file_id"]
-                file_obj = await call_telegram("getFile", {"file_id": file_id})
-                if file_obj.get("ok"):
-                    file_path = file_obj["result"]["file_path"]
-                    file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
-                    try:
-                        resp = await http_client.get(file_url, timeout=20.0)
-                        raw_text = resp.text
-                    except:
-                        await call_telegram("sendMessage", {"chat_id": chat_id, "text": "❌ خطا در دانلود فایل."})
+            # ارسال پیام وضعیت
+            await edit_message(chat_id, message_id, STRINGS["batch_file_processing"])
+            raw_text = ""
+            try:
+                if message.get("document"):
+                    # دریافت فایل
+                    file_id = message["document"]["file_id"]
+                    file_obj = await call_telegram("getFile", {"file_id": file_id})
+                    if file_obj.get("ok"):
+                        file_path = file_obj["result"]["file_path"]
+                        file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
+                        try:
+                            resp = await http_client.get(file_url, timeout=20.0)
+                            if resp.status_code == 200:
+                                raw_text = resp.text
+                            else:
+                                await call_telegram("sendMessage", {"chat_id": chat_id, "text": STRINGS["batch_file_error"]})
+                                await execute_db("UPDATE users SET state = NULL WHERE id = ?", user["id"])
+                                return True
+                        except Exception as e:
+                            logger.error(f"File download error: {e}")
+                            await call_telegram("sendMessage", {"chat_id": chat_id, "text": STRINGS["batch_file_error"]})
+                            await execute_db("UPDATE users SET state = NULL WHERE id = ?", user["id"])
+                            return True
+                    else:
+                        await call_telegram("sendMessage", {"chat_id": chat_id, "text": STRINGS["batch_file_error"]})
                         await execute_db("UPDATE users SET state = NULL WHERE id = ?", user["id"])
                         return True
                 else:
-                    await call_telegram("sendMessage", {"chat_id": chat_id, "text": "❌ خطا در دریافت فایل."})
-                    await execute_db("UPDATE users SET state = NULL WHERE id = ?", user["id"])
-                    return True
-            else:
-                raw_text = text
-                if not raw_text:
-                    await call_telegram("sendMessage", {"chat_id": chat_id, "text": "❌ لطفاً یک متن یا فایل ارسال کنید."})
-                    return True
+                    raw_text = text
+                    if not raw_text:
+                        await call_telegram("sendMessage", {"chat_id": chat_id, "text": "❌ لطفاً یک متن یا فایل ارسال کنید."})
+                        await execute_db("UPDATE users SET state = NULL WHERE id = ?", user["id"])
+                        return True
+            except Exception as e:
+                logger.error(f"Batch proxy error: {e}")
+                await call_telegram("sendMessage", {"chat_id": chat_id, "text": STRINGS["batch_test_error"]})
+                await execute_db("UPDATE users SET state = NULL WHERE id = ?", user["id"])
+                return True
 
             # پردازش لیست
             proxy_list = parse_proxy_list(raw_text)
