@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-ربات مدیریت ساب‌لینک – نسخه CAT FINAL (همه تغییرات اعمال‌شده)
+ربات مدیریت ساب‌لینک – نسخه CAT FINAL (کامل و بی‌نقص)
 - مدیریت پروکسی‌های HTTP/SOCKS4/SOCKS5 با صفحه‌بندی و نام‌گذاری ساده
 - تست کانفیگ‌ها از طریق پروکسی‌های ایران (اتصال TCP از طریق پروکسی)
 - دریافت ساب‌لینک فقط از طریق پروکسی‌های ایران
@@ -82,7 +82,7 @@ def del_local_cache(key):
     _local_cache.pop(key, None)
 
 # ---------------------------------------------------------------------
-# 📚 متون فارسی (اضافه‌شده)
+# 📚 متون فارسی
 # ---------------------------------------------------------------------
 STRINGS = {
     "start_welcome": "👋 به ربات هوشمند TechNowVpn کانفیگ رایگان خوش آمدید!\n\nاز طریق دکمه‌های زیر می‌توانید حساب خود را مدیریت کرده و سرور دریافت کنید.",
@@ -2441,6 +2441,7 @@ async def startup_event():
     global http_client
     http_client = httpx.AsyncClient(limits=httpx.Limits(max_keepalive_connections=50, max_connections=100))
     await init_database_if_needed()
+    # تمام تسک‌های پس‌زمینه
     asyncio.create_task(background_expiration_notifier())
     asyncio.create_task(background_subscription_fetcher())
     asyncio.create_task(background_proxy_checker())
