@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-ربات مدیریت ساب‌لینک v3 – نسخه CAT ULTIMATE (کامل و نهایی)
-- مدیریت پروکسی‌های HTTP/SOCKS5 با آی‌پی ایران
+ربات مدیریت ساب‌لینک v3 – نسخه CAT ULTIMATE (با قابلیت تست دسته‌جمعی پروکسی)
+- مدیریت پروکسی‌های HTTP/SOCKS4/SOCKS5 با آی‌پی ایران
 - تست کانفیگ‌ها از طریق پروکسی‌ها (لحظه‌ای و دوره‌ای)
 - حالت ایمن با تست مستقیم خارج و تگ awaiting_retest
 - اولویت‌بندی کانفیگ‌ها بر اساس سرعت
 - دستور /status با داشبورد کامل
 - گزارش‌های هوشمند (فقط رویدادهای مهم)
+- ✅ قابلیت جدید: دریافت لیست پروکسی (فایل/متن/JSON) و تست همزمان همه
 - حفظ تمام قابلیت‌های قبلی
 """
 
@@ -77,7 +78,7 @@ def del_local_cache(key):
     _local_cache.pop(key, None)
 
 # ---------------------------------------------------------------------
-# 📚 متون فارسی
+# 📚 متون فارسی (اضافه‌شده برای قابلیت جدید)
 # ---------------------------------------------------------------------
 STRINGS = {
     "start_welcome": "👋 به ربات هوشمند TechNowVpn کانفیگ رایگان خوش آمدید!\n\nاز طریق دکمه‌های زیر می‌توانید حساب خود را مدیریت کرده و سرور دریافت کنید.",
@@ -153,6 +154,11 @@ STRINGS = {
     "proxy_no_active": "🚨 هیچ پروکسی فعالی وجود ندارد. ربات وارد حالت ایمن شد.",
     "proxy_restored": "✅ پروکسی جدید فعال شد. ربات از حالت ایمن خارج شد.",
     "proxy_delete_confirm": "آیا از حذف این پروکسی اطمینان دارید؟",
+    # جدید برای قابلیت دسته‌جمعی
+    "batch_test_start": "⏳ در حال تست {total} پروکسی... لطفاً صبر کنید.",
+    "batch_test_result": "📊 **نتیجه تست پروکسی‌ها**\n\n🔢 کل: {total}\n✅ قبول‌شده (ایران + فعال): {accepted}\n❌ ردشده: {rejected}\n\n📋 لیست قبول‌شده‌ها:\n{accepted_list}\n\n❌ دلایل رد:\n{rejected_reasons}",
+    "batch_test_no_result": "❌ هیچ پروکسی معتبری در لیست شما یافت نشد.",
+    "batch_test_error": "❌ خطا در پردازش لیست. لطفاً دوباره تلاش کنید.",
 }
 
 # ---------------------------------------------------------------------
@@ -409,122 +415,7 @@ async def format_config_name(config_text):
     return config_text
 
 # ---------------------------------------------------------------------
-# 🗄️ مقداردهی اولیه دیتابیس
-# ---------------------------------------------------------------------
-async def init_database_if_needed():
-    tables = [
-        """CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            telegram_id TEXT UNIQUE NOT NULL,
-            username TEXT DEFAULT NULL,
-            full_name TEXT DEFAULT NULL,
-            balance INTEGER DEFAULT 0,
-            referred_by TEXT DEFAULT NULL,
-            has_used_trial INTEGER DEFAULT 0,
-            state TEXT DEFAULT NULL,
-            plan_data TEXT DEFAULT NULL,
-            is_test_mode INTEGER DEFAULT 0,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );""",
-        """CREATE TABLE IF NOT EXISTS subscriptions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            plan_id INTEGER DEFAULT NULL,
-            token TEXT UNIQUE NOT NULL,
-            expires_at TIMESTAMP NOT NULL,
-            status TEXT DEFAULT 'active',
-            notified_level INTEGER DEFAULT 0,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY(user_id) REFERENCES users(id)
-        );""",
-        """CREATE TABLE IF NOT EXISTS configs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            config_text TEXT NOT NULL,
-            is_active INTEGER DEFAULT 1,
-            fail_count INTEGER DEFAULT 0,
-            speed_score INTEGER DEFAULT 0,
-            awaiting_retest INTEGER DEFAULT 0,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );""",
-        """CREATE TABLE IF NOT EXISTS settings (
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL
-        );""",
-        """CREATE TABLE IF NOT EXISTS plans (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            price INTEGER NOT NULL,
-            duration_days INTEGER NOT NULL,
-            max_users INTEGER DEFAULT 1,
-            is_active INTEGER DEFAULT 1,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );""",
-        """CREATE TABLE IF NOT EXISTS subscription_sources (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            url TEXT NOT NULL,
-            last_fetch TIMESTAMP DEFAULT NULL,
-            is_active INTEGER DEFAULT 1,
-            score INTEGER DEFAULT 0,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );""",
-        """CREATE TABLE IF NOT EXISTS proxies (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            address TEXT NOT NULL,
-            type TEXT DEFAULT 'http',
-            is_active INTEGER DEFAULT 0,
-            score INTEGER DEFAULT 0,
-            last_check TIMESTAMP DEFAULT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );"""
-    ]
-
-    for q in tables:
-        await execute_db(q)
-
-    # تعمیر ستون‌ها برای نسخه‌های قدیمی
-    try:
-        await execute_db("ALTER TABLE configs ADD COLUMN speed_score INTEGER DEFAULT 0")
-    except:
-        pass
-    try:
-        await execute_db("ALTER TABLE configs ADD COLUMN awaiting_retest INTEGER DEFAULT 0")
-    except:
-        pass
-    try:
-        await execute_db("ALTER TABLE subscription_sources ADD COLUMN score INTEGER DEFAULT 0")
-    except:
-        pass
-    try:
-        await execute_db("ALTER TABLE subscription_sources ADD COLUMN last_fetch TIMESTAMP")
-    except:
-        pass
-    try:
-        await execute_db("ALTER TABLE subscription_sources ADD COLUMN is_active INTEGER DEFAULT 1")
-    except:
-        pass
-
-    await execute_db("CREATE INDEX IF NOT EXISTS idx_settings_key ON settings(key);")
-
-    banner_exists = await query_db("SELECT id FROM configs WHERE id = 0")
-    if not get_first_row(banner_exists):
-        await execute_db("INSERT INTO configs (id, config_text, is_active, fail_count) VALUES (0, ?, 1, 0)", BANNER_CONFIG)
-        logger.info("Banner config created with id=0")
-    else:
-        await execute_db("UPDATE configs SET is_active = 1, config_text = ? WHERE id = 0", BANNER_CONFIG)
-
-    defaults = {"referral_reward": "2000", "force_channels": ""}
-    for key, val in defaults.items():
-        res = await query_db("SELECT value FROM settings WHERE key = ?", key)
-        if not get_first_row(res):
-            await execute_db("INSERT INTO settings (key, value) VALUES (?, ?)", key, val)
-
-    await put_kv("db_initialized_v3_cat", "true")
-    logger.info("Database initialized/verified with all required tables")
-
-# ---------------------------------------------------------------------
-# 🔌 توابع مدیریت پروکسی
+# 🧪 توابع مدیریت پروکسی (با قابلیت جدید)
 # ---------------------------------------------------------------------
 async def test_proxy(proxy_address: str, proxy_type: str = "http") -> tuple:
     try:
@@ -632,10 +523,205 @@ async def test_config_direct(config_text: str) -> tuple:
         return False, 0
 
 # ---------------------------------------------------------------------
+# 🧪 قابلیت جدید: تست دسته‌جمعی پروکسی از لیست
+# ---------------------------------------------------------------------
+def parse_proxy_list(raw_text: str) -> list:
+    """
+    ورودی می‌تواند:
+    - متن ساده با هر خط یک آدرس (ip:port یا http://ip:port یا socks4://ip:port)
+    - JSON (با کلیدهای ip_address و port)
+    - لیست آی‌پی و پورت به‌صورت "ip port"
+    خروجی: لیستی از دیکشنری‌های {"address": "ip:port", "type": "http/socks4/socks5"}
+    """
+    lines = raw_text.strip().splitlines()
+    proxies = []
+    # تلاش برای پارس JSON
+    try:
+        data = json.loads(raw_text)
+        if isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict) and "ip_address" in item and "port" in item:
+                    ip = item["ip_address"]
+                    port = item["port"]
+                    proxy_type = "http"  # default
+                    # اگر نوع در JSON باشد
+                    if "type" in item and item["type"].lower() in ["http", "socks4", "socks5"]:
+                        proxy_type = item["type"].lower()
+                    proxies.append({"address": f"{ip}:{port}", "type": proxy_type})
+            if proxies:
+                return proxies
+    except:
+        pass
+
+    # پردازش خط‌به‌خط
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        proxy_type = "http"
+        address = line
+        # تشخیص پروتکل
+        if line.startswith("http://"):
+            proxy_type = "http"
+            address = line[7:]
+        elif line.startswith("socks4://"):
+            proxy_type = "socks4"
+            address = line[9:]
+        elif line.startswith("socks5://"):
+            proxy_type = "socks5"
+            address = line[9:]
+        # اگر فرمت "ip port" بود (با فاصله)
+        if " " in address and ":" not in address:
+            parts = address.split()
+            if len(parts) == 2 and parts[1].isdigit():
+                address = f"{parts[0]}:{parts[1]}"
+        # اگر فقط "ip:port" بود
+        if ":" in address:
+            proxies.append({"address": address, "type": proxy_type})
+    return proxies
+
+async def batch_test_proxies(proxy_list: list, max_concurrent: int = 20) -> dict:
+    """
+    تست همزمان لیست پروکسی‌ها
+    خروجی: {"accepted": [], "rejected": [], "stats": {...}}
+    """
+    semaphore = asyncio.Semaphore(max_concurrent)
+    async def test_one(proxy):
+        async with semaphore:
+            address = proxy["address"]
+            proxy_type = proxy["type"]
+            success, country, latency = await test_proxy(address, proxy_type)
+            if success and country == "IR":
+                return {"accepted": True, "address": address, "type": proxy_type, "latency": latency}
+            else:
+                reason = "غیرفعال (timeout)" if not success else f"آی‌پی خارجی ({country})"
+                return {"accepted": False, "address": address, "type": proxy_type, "reason": reason}
+    tasks = [test_one(p) for p in proxy_list]
+    results = await asyncio.gather(*tasks)
+    accepted = []
+    rejected = []
+    for res in results:
+        if res["accepted"]:
+            accepted.append(res)
+        else:
+            rejected.append(res)
+    return {
+        "accepted": accepted,
+        "rejected": rejected,
+        "total": len(proxy_list),
+        "accepted_count": len(accepted),
+        "rejected_count": len(rejected)
+    }
+
+# ---------------------------------------------------------------------
+# 🗄️ مقداردهی اولیه دیتابیس
+# ---------------------------------------------------------------------
+async def init_database_if_needed():
+    tables = [
+        """CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            telegram_id TEXT UNIQUE NOT NULL,
+            username TEXT DEFAULT NULL,
+            full_name TEXT DEFAULT NULL,
+            balance INTEGER DEFAULT 0,
+            referred_by TEXT DEFAULT NULL,
+            has_used_trial INTEGER DEFAULT 0,
+            state TEXT DEFAULT NULL,
+            plan_data TEXT DEFAULT NULL,
+            is_test_mode INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );""",
+        """CREATE TABLE IF NOT EXISTS subscriptions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            plan_id INTEGER DEFAULT NULL,
+            token TEXT UNIQUE NOT NULL,
+            expires_at TIMESTAMP NOT NULL,
+            status TEXT DEFAULT 'active',
+            notified_level INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        );""",
+        """CREATE TABLE IF NOT EXISTS configs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            config_text TEXT NOT NULL,
+            is_active INTEGER DEFAULT 1,
+            fail_count INTEGER DEFAULT 0,
+            speed_score INTEGER DEFAULT 0,
+            awaiting_retest INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );""",
+        """CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );""",
+        """CREATE TABLE IF NOT EXISTS plans (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            price INTEGER NOT NULL,
+            duration_days INTEGER NOT NULL,
+            max_users INTEGER DEFAULT 1,
+            is_active INTEGER DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );""",
+        """CREATE TABLE IF NOT EXISTS subscription_sources (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            url TEXT NOT NULL,
+            last_fetch TIMESTAMP DEFAULT NULL,
+            is_active INTEGER DEFAULT 1,
+            score INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );""",
+        """CREATE TABLE IF NOT EXISTS proxies (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            address TEXT NOT NULL,
+            type TEXT DEFAULT 'http',
+            is_active INTEGER DEFAULT 0,
+            score INTEGER DEFAULT 0,
+            last_check TIMESTAMP DEFAULT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );"""
+    ]
+
+    for q in tables:
+        await execute_db(q)
+
+    # تعمیر ستون‌ها برای نسخه‌های قدیمی
+    for col in ["speed_score", "awaiting_retest"]:
+        try:
+            await execute_db(f"ALTER TABLE configs ADD COLUMN {col} INTEGER DEFAULT 0")
+        except:
+            pass
+    for col in ["score", "last_fetch", "is_active"]:
+        try:
+            await execute_db(f"ALTER TABLE subscription_sources ADD COLUMN {col} INTEGER DEFAULT 0")
+        except:
+            pass
+
+    await execute_db("CREATE INDEX IF NOT EXISTS idx_settings_key ON settings(key);")
+
+    banner_exists = await query_db("SELECT id FROM configs WHERE id = 0")
+    if not get_first_row(banner_exists):
+        await execute_db("INSERT INTO configs (id, config_text, is_active, fail_count) VALUES (0, ?, 1, 0)", BANNER_CONFIG)
+        logger.info("Banner config created with id=0")
+    else:
+        await execute_db("UPDATE configs SET is_active = 1, config_text = ? WHERE id = 0", BANNER_CONFIG)
+
+    defaults = {"referral_reward": "2000", "force_channels": ""}
+    for key, val in defaults.items():
+        res = await query_db("SELECT value FROM settings WHERE key = ?", key)
+        if not get_first_row(res):
+            await execute_db("INSERT INTO settings (key, value) VALUES (?, ?)", key, val)
+
+    await put_kv("db_initialized_v3_cat", "true")
+    logger.info("Database initialized/verified with all required tables")
+
+# ---------------------------------------------------------------------
 # 🔄 تسک‌های پس‌زمینه
 # ---------------------------------------------------------------------
 async def background_proxy_checker():
-    last_status = {}
     while True:
         await asyncio.sleep(300)
         try:
@@ -907,6 +993,7 @@ def get_admin_inline_keyboard():
             [{"text": "📋 مدیریت کانفیگ‌ها", "callback_data": "adm_manage_configs"}],
             [{"text": "📡 مدیریت ساب‌لینک‌های خارجی", "callback_data": "adm_manage_sub_sources"}],
             [{"text": "🔌 مدیریت پروکسی‌ها", "callback_data": "adm_manage_proxies"}],
+            [{"text": "📥 تست و دریافت لیست پروکسی", "callback_data": "adm_batch_proxy"}],
             [{"text": "⚙️ تنظیمات", "callback_data": "adm_settings"}, {"text": "📢 ارسال همگانی", "callback_data": "adm_broadcast"}],
             [{"text": "👤 نمای کاربری (تست)", "callback_data": "adm_test_user"}]
         ]
@@ -1053,7 +1140,7 @@ async def create_subscription_from_plan(plan_id, user_id):
     return token
 
 # ---------------------------------------------------------------------
-# 💬 مدیریت state ها (کامل)
+# 💬 مدیریت state ها (با اضافه شدن قابلیت دسته‌جمعی)
 # ---------------------------------------------------------------------
 async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_admin):
     text = message.get("text", "").strip()
@@ -1069,6 +1156,75 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
         return True
 
     if is_admin_user:
+        # ---------- مدیریت دسته‌جمعی پروکسی ----------
+        if state == "waiting_for_batch_proxy":
+            # دریافت متن یا فایل
+            if message.get("document"):
+                # اگر فایل بود، دانلود کن
+                file_id = message["document"]["file_id"]
+                file_obj = await call_telegram("getFile", {"file_id": file_id})
+                if file_obj.get("ok"):
+                    file_path = file_obj["result"]["file_path"]
+                    file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
+                    try:
+                        resp = await http_client.get(file_url, timeout=20.0)
+                        raw_text = resp.text
+                    except:
+                        await call_telegram("sendMessage", {"chat_id": chat_id, "text": "❌ خطا در دانلود فایل."})
+                        await execute_db("UPDATE users SET state = NULL WHERE id = ?", user["id"])
+                        return True
+                else:
+                    await call_telegram("sendMessage", {"chat_id": chat_id, "text": "❌ خطا در دریافت فایل."})
+                    await execute_db("UPDATE users SET state = NULL WHERE id = ?", user["id"])
+                    return True
+            else:
+                raw_text = text
+                if not raw_text:
+                    await call_telegram("sendMessage", {"chat_id": chat_id, "text": "❌ لطفاً یک متن یا فایل ارسال کنید."})
+                    return True
+
+            # پردازش لیست
+            proxy_list = parse_proxy_list(raw_text)
+            if not proxy_list:
+                await call_telegram("sendMessage", {"chat_id": chat_id, "text": STRINGS["batch_test_no_result"]})
+                await execute_db("UPDATE users SET state = NULL WHERE id = ?", user["id"])
+                return True
+
+            # تست همزمان
+            await edit_message(chat_id, message_id, STRINGS["batch_test_start"].format(total=len(proxy_list)))
+            result = await batch_test_proxies(proxy_list)
+
+            # ذخیره پروکسی‌های قبول‌شده
+            for p in result["accepted"]:
+                name = f"batch_{int(time.time())}_{secrets.token_hex(4)}"
+                await execute_db(
+                    "INSERT INTO proxies (name, address, type, is_active, score) VALUES (?, ?, ?, 1, ?)",
+                    name, p["address"], p["type"], max(0, 100 - p["latency"] // 10)
+                )
+
+            # گزارش نهایی
+            accepted_list = "\n".join([f"- {p['type']}://{p['address']} (تاخیر: {p['latency']}ms)" for p in result["accepted"]]) or "هیچ‌کدام"
+            rejected_reasons = {}
+            for r in result["rejected"]:
+                reason = r["reason"]
+                rejected_reasons[reason] = rejected_reasons.get(reason, 0) + 1
+            reasons_str = "\n".join([f"- {count} تا: {reason}" for reason, count in rejected_reasons.items()]) or "هیچ‌کدام"
+
+            if result["accepted_count"] == 0:
+                final_msg = STRINGS["batch_test_no_result"]
+            else:
+                final_msg = STRINGS["batch_test_result"].format(
+                    total=result["total"],
+                    accepted=result["accepted_count"],
+                    rejected=result["rejected_count"],
+                    accepted_list=accepted_list,
+                    rejected_reasons=reasons_str
+                )
+
+            await call_telegram("sendMessage", {"chat_id": chat_id, "text": final_msg, "parse_mode": "Markdown"})
+            await execute_db("UPDATE users SET state = NULL WHERE id = ?", user["id"])
+            return True
+
         # ---------- افزودن کانفیگ ----------
         if state == "waiting_for_config":
             if await is_duplicate_config(text):
@@ -1100,6 +1256,9 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
             address = text
             if text.startswith("socks4://"):
                 proxy_type = "socks4"
+                address = text[9:]
+            elif text.startswith("socks5://"):
+                proxy_type = "socks5"
                 address = text[9:]
             elif text.startswith("http://"):
                 address = text[7:]
@@ -1337,7 +1496,7 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
 
         # ---------- ویرایش پلن ----------
         if state.startswith("waiting_plan_edit_"):
-            # برای اختصار، کد ویرایش پلن مشابه قبل است، در فایل کامل وجود دارد.
+            # برای اختصار، کد ویرایش پلن مشابه قبل است
             pass
 
     # ---------- حالت پشتیبانی ----------
@@ -1581,6 +1740,13 @@ async def process_callback(callback):
     # =============================================================
     # ---------- بخش‌های مدیریتی ----------
     # =============================================================
+
+    # ----- مدیریت دسته‌جمعی پروکسی -----
+    if data == "adm_batch_proxy":
+        await execute_db("UPDATE users SET state = 'waiting_for_batch_proxy' WHERE id = ?", user["id"])
+        markup = {"inline_keyboard": [[{"text": "🔙 لغو", "callback_data": "admin_return"}]]}
+        await edit_message(chat_id, message_id, "📥 لطفاً لیست پروکسی‌ها را به‌صورت **متن** (هر خط یک آدرس) یا **فایل** (TXT/JSON) ارسال کنید.\n\nفرمت‌های پشتیبانی:\n- `ip:port` (پیش‌فرض HTTP)\n- `http://ip:port`\n- `socks4://ip:port`\n- `socks5://ip:port`\n- JSON با کلیدهای `ip_address` و `port`\n\nربات همه را تست می‌کند و فقط پروکسی‌های فعال ایرانی را اضافه می‌کند.", reply_markup=markup, parse_mode="Markdown")
+        return
 
     # ----- مدیریت پروکسی -----
     if data == "adm_manage_proxies":
@@ -2197,7 +2363,7 @@ async def startup_event():
     asyncio.create_task(background_proxy_checker())
     asyncio.create_task(background_config_tester())
     asyncio.create_task(background_daily_report())
-    logger.info("🚀 Bot Server Started! (CAT ULTIMATE with Proxy Manager & Safe Mode)")
+    logger.info("🚀 Bot Server Started! (CAT ULTIMATE with Batch Proxy Test & Safe Mode)")
 
 @app.on_event("shutdown")
 async def shutdown_event():
