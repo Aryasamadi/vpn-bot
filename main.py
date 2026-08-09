@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-ربات مدیریت ساب‌لینک – نسخه CAT FINAL (کامل و بی‌نقص)
+ربات مدیریت ساب‌لینک – نسخه CAT FINAL (با رفع کامل خطاها و اضافه‌شدن تمام توابع)
 - مدیریت پروکسی‌های HTTP/SOCKS4/SOCKS5 با صفحه‌بندی و نام‌گذاری ساده
 - تست کانفیگ‌ها از طریق پروکسی‌های ایران (اتصال TCP از طریق پروکسی)
 - دریافت ساب‌لینک فقط از طریق پروکسی‌های ایران
@@ -823,6 +823,56 @@ async def send_admin_alert(text, reply_markup=None, parse_mode="Markdown"):
     for admin_id in admins:
         await call_telegram("sendMessage", {"chat_id": int(admin_id), "text": text, "reply_markup": reply_markup, "parse_mode": parse_mode})
 
+# =====================================================================
+# 🟢 تسک یادآور انقضا (که قبلاً جا افتاده بود)
+# =====================================================================
+async def background_expiration_notifier():
+    while True:
+        await asyncio.sleep(15 * 60)
+        try:
+            now = datetime.datetime.utcnow()
+            query = """
+                SELECT s.id as sub_id, s.token, s.expires_at, s.notified_level,
+                       u.telegram_id, u.balance
+                FROM subscriptions s
+                JOIN users u ON s.user_id = u.id
+                WHERE s.status = 'active'
+            """
+            res = await query_db(query)
+            subs = get_rows(res)
+            for sub in subs:
+                try:
+                    expires_at = datetime.datetime.strptime(sub["expires_at"], "%Y-%m-%d %H:%M:%S")
+                except:
+                    continue
+                time_left_sec = (expires_at - now).total_seconds()
+                if time_left_sec <= 0:
+                    continue
+                notified_level = sub.get("notified_level", 0)
+                tg_id = sub["telegram_id"]
+                sub_url = await build_sub_url_async(sub["token"])
+                msg = ""
+                new_level = notified_level
+                if time_left_sec <= 3600 and notified_level < 3:
+                    msg = f"⚠️ **هشدار خیلی مهم** ⚠️\n\nفقط **۱ ساعت** تا پایان اعتبار سرویس شما باقی مانده است!\n\n🔗 لینک سرویس: `{sub_url}`\n💰 موجودی کیف پول: {sub['balance']:,} تومان\n\nجهت جلوگیری از قطعی اینترنت، سریعاً از طریق دکمه زیر تمدید کنید."
+                    new_level = 3
+                elif time_left_sec <= 86400 and notified_level < 2:
+                    msg = f"⏳ **یادآوری تمدید**\n\nسرویس شما **۲۴ ساعت** دیگر منقضی خواهد شد.\n\n🔗 لینک سرویس: `{sub_url}`\n💰 موجودی کیف پول: {sub['balance']:,} تومان\n\nلطفاً پیش از اتمام زمان، اکانت خود را شارژ و تمدید نمایید."
+                    new_level = 2
+                elif time_left_sec <= 259200 and notified_level < 1:
+                    msg = f"📅 **اطلاعیه سرویس**\n\nکاربر گرامی، تنها **۳ روز** تا پایان اشتراک شما باقی مانده است.\n\n🔗 لینک سرویس: `{sub_url}`\n💰 موجودی کیف پول: {sub['balance']:,} تومان\n\nمی‌توانید با دعوت دوستان حساب خود را رایگان شارژ کنید یا تمدید نمایید."
+                    new_level = 1
+                if msg:
+                    markup = {"inline_keyboard": [[{"text": "♻️ تمدید سریع سرویس", "callback_data": f"renew_sub_{sub['token']}"}]]}
+                    res_tg = await call_telegram("sendMessage", {"chat_id": int(tg_id), "text": msg, "parse_mode": "Markdown", "reply_markup": markup})
+                    if res_tg.get("ok"):
+                        await execute_db("UPDATE subscriptions SET notified_level = ? WHERE id = ?", new_level, sub["sub_id"])
+        except Exception as e:
+            logger.error(f"Notifier error: {e}")
+
+# ---------------------------------------------------------------------
+# ادامه تسک‌های پس‌زمینه
+# ---------------------------------------------------------------------
 async def background_config_tester():
     while True:
         await asyncio.sleep(1800)  # ۳۰ دقیقه
@@ -864,6 +914,19 @@ async def background_subscription_fetcher():
                 await asyncio.sleep(1)
         except Exception as e:
             logger.error(f"Background fetcher error: {e}")
+
+async def background_daily_report():
+    while True:
+        await asyncio.sleep(86400)
+        try:
+            total_users = get_first_row(await query_db("SELECT COUNT(*) as cnt FROM users"))["cnt"] if get_first_row(await query_db("SELECT COUNT(*) as cnt FROM users")) else 0
+            premium_users = get_first_row(await query_db("SELECT COUNT(DISTINCT user_id) as cnt FROM subscriptions WHERE status = 'active'"))["cnt"] if get_first_row(await query_db("SELECT COUNT(DISTINCT user_id) as cnt FROM subscriptions WHERE status = 'active'")) else 0
+            total_configs = get_first_row(await query_db("SELECT COUNT(*) as cnt FROM configs WHERE id != 0"))["cnt"] if get_first_row(await query_db("SELECT COUNT(*) as cnt FROM configs WHERE id != 0")) else 0
+            total_proxies, active_proxies, inactive_proxies, weak_proxies = await get_proxy_count()
+            msg = f"📊 **گزارش روزانه ربات**\n\n👥 کاربران کل: {total_users}\n⭐ کاربران پرومکس: {premium_users}\n📡 کانفیگ‌ها: {total_configs}\n🔌 پروکسی‌ها: کل {total_proxies} | فعال {active_proxies} | ضعیف {weak_proxies} | غیرفعال {inactive_proxies}"
+            await send_admin_alert(msg)
+        except Exception as e:
+            logger.error(f"Daily report error: {e}")
 
 # ---------------------------------------------------------------------
 # 📥 دریافت کانفیگ از ساب‌لینک (فقط از طریق پروکسی)
