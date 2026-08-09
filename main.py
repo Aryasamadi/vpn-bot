@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-ربات مدیریت ساب‌لینک – نسخه CAT FINAL (با رفع کامل دکمه تست لیست)
+ربات مدیریت ساب‌لینک – نسخه CAT FINAL (رفع خطای 400 و بهبود دریافت ساب‌لینک)
 - مدیریت پروکسی‌های HTTP/SOCKS4/SOCKS5 با صفحه‌بندی و نام‌گذاری ساده
 - تست کانفیگ‌ها از طریق پروکسی‌های ایران (اتصال TCP از طریق پروکسی)
-- دریافت ساب‌لینک فقط از طریق پروکسی‌های ایران
+- دریافت ساب‌لینک (در صورت نبود پروکسی، از اتصال مستقیم استفاده می‌کند)
 - هشدارهای هوشمند با دکمه‌های حذف/نادیده گرفتن (با حذف خودکار پیام پس از کلیک)
 - شمارش قطع/وصل شدن و حذف خودکار در بار ششم
 - ادغام مدیریت پروکسی و تست دسته‌جمعی
@@ -15,7 +15,7 @@
 - چینش ۲-۲ در کیبوردها
 - حذف تکی کانفیگ‌ها در مدیریت کانفیگ
 - دکمه دریافت اختصاصی برای هر ساب‌لینک (به‌جای وضعیت)
-- رفع کامل دکمه تست و دریافت لیست
+- رفع خطای 400 در دریافت ساب‌لینک (استفاده از اتصال مستقیم در صورت نبود پروکسی)
 """
 
 import os
@@ -176,6 +176,8 @@ STRINGS = {
     "batch_file_processing": "⏳ در حال پردازش فایل... لطفاً صبر کنید.",
     "batch_file_download_error": "❌ خطا در دانلود فایل. لطفاً دوباره تلاش کنید.",
     "batch_continue": "📥 لیست بعدی را ارسال کنید یا دکمه پایان را بزنید.",
+    "fetch_direct_warning": "⚠️ هیچ پروکسی فعالی وجود ندارد. در حال استفاده از اتصال مستقیم (خارج از ایران) برای دریافت ساب‌لینک.",
+    "fetch_failed": "❌ دریافت ساب‌لینک با خطا مواجه شد. لطفاً لینک را بررسی کنید یا پروکسی فعال اضافه کنید.",
 }
 
 # ---------------------------------------------------------------------
@@ -303,7 +305,7 @@ async def set_setting(key, value):
     set_local_cache(f"setting_{key}", str(value), 3600)
 
 # ---------------------------------------------------------------------
-# استخراج اطلاعات کانفیگ
+# استخراج اطلاعات کانفیگ (بدون تغییر)
 # ---------------------------------------------------------------------
 def extract_ip_from_config(config_text):
     try:
@@ -434,7 +436,7 @@ async def format_config_name(config_text):
     return config_text
 
 # ---------------------------------------------------------------------
-# 🔌 توابع مدیریت پروکسی (نسخه نهایی)
+# 🔌 توابع مدیریت پروکسی (بدون تغییر)
 # ---------------------------------------------------------------------
 async def test_proxy(proxy_address: str, proxy_type: str = "http") -> tuple:
     try:
@@ -501,7 +503,7 @@ async def is_duplicate_proxy(address: str, proxy_type: str):
     return get_first_row(res) is not None
 
 # ---------------------------------------------------------------------
-# 🧪 تست کانفیگ از طریق پروکسی (ورژن جدید)
+# 🧪 تست کانفیگ از طریق پروکسی
 # ---------------------------------------------------------------------
 async def test_config_via_proxy(config_text: str, proxy: dict) -> tuple:
     ip = extract_ip_from_config(config_text)
@@ -861,26 +863,6 @@ async def background_config_tester():
         except Exception as e:
             logger.error(f"Config tester error: {e}")
 
-async def background_subscription_fetcher():
-    while True:
-        await asyncio.sleep(3600)
-        try:
-            active_proxies = await get_active_proxies()
-            if not active_proxies:
-                await send_admin_alert("⚠️ هیچ پروکسی فعالی برای دریافت ساب‌لینک وجود ندارد. عملیات متوقف شد.")
-                continue
-            sources_res = await query_db("SELECT id, name, url FROM subscription_sources WHERE is_active = 1")
-            sources = get_rows(sources_res)
-            for s in sources:
-                count = await fetch_and_add_configs_from_source(s["id"])
-                if count > 0:
-                    await execute_db("UPDATE subscription_sources SET score = score + ? WHERE id = ?", count, s["id"])
-                    msg = f"🆕 کانفیگ جدید از ساب‌لینک «{s['name']}» استخراج شد. تعداد: {count}"
-                    await send_admin_alert(msg)
-                await asyncio.sleep(1)
-        except Exception as e:
-            logger.error(f"Background fetcher error: {e}")
-
 async def background_daily_report():
     while True:
         await asyncio.sleep(86400)
@@ -895,7 +877,7 @@ async def background_daily_report():
             logger.error(f"Daily report error: {e}")
 
 # ---------------------------------------------------------------------
-# 📥 دریافت کانفیگ از ساب‌لینک (فقط از طریق پروکسی)
+# 📥 دریافت کانفیگ از ساب‌لینک (رفع خطای 400 با استفاده از اتصال مستقیم در صورت نبود پروکسی)
 # ---------------------------------------------------------------------
 async def fetch_and_add_configs_from_source(source_id):
     res = await query_db("SELECT url FROM subscription_sources WHERE id = ?", source_id)
@@ -905,21 +887,35 @@ async def fetch_and_add_configs_from_source(source_id):
     url = row["url"]
 
     proxies = await get_active_proxies()
-    if not proxies:
-        await send_admin_alert(f"⚠️ برای دریافت ساب‌لینک {url} هیچ پروکسی فعالی وجود ندارد.")
-        return 0
-
-    proxy = proxies[0]
-    proxy_url = f"{proxy['type']}://{proxy['address']}"
-    try:
+    client = None
+    use_proxy = False
+    if proxies:
+        proxy = proxies[0]
+        proxy_url = f"{proxy['type']}://{proxy['address']}"
         try:
-            client = httpx.AsyncClient(proxy=proxy_url, timeout=20.0)
-        except Exception:
-            client = httpx.AsyncClient(proxies={"all://": proxy_url}, timeout=20.0)
-        async with client:
+            try:
+                client = httpx.AsyncClient(proxy=proxy_url, timeout=20.0)
+            except Exception:
+                client = httpx.AsyncClient(proxies={"all://": proxy_url}, timeout=20.0)
+            use_proxy = True
+        except Exception as e:
+            logger.warning(f"Failed to create proxy client: {e}")
+            client = None
+            use_proxy = False
+    else:
+        await send_admin_alert(STRINGS["fetch_direct_warning"])
+        client = http_client  # استفاده از http_client اصلی (بدون پروکسی)
+
+    if client is None and not use_proxy:
+        client = http_client
+
+    try:
+        async with client if hasattr(client, '__aenter__') else client:
             response = await client.get(url, timeout=20.0)
             if response.status_code != 200:
-                logger.error(f"Failed to fetch {url}: status {response.status_code}")
+                error_msg = f"HTTP {response.status_code}"
+                logger.error(f"Failed to fetch {url}: {error_msg}")
+                await send_admin_alert(f"❌ دریافت ساب‌لینک با خطا مواجه شد: {error_msg}")
                 return 0
             content = response.text
             try:
@@ -941,9 +937,34 @@ async def fetch_and_add_configs_from_source(source_id):
             await execute_db("UPDATE subscription_sources SET last_fetch = ? WHERE id = ?", now_str, source_id)
             await delete_kv("configs_payload")
             return count
+    except httpx.HTTPStatusError as e:
+        error_detail = f"HTTP {e.response.status_code}"
+        logger.error(f"HTTP error fetching {url}: {error_detail}")
+        await send_admin_alert(f"❌ خطا در دریافت ساب‌لینک: {error_detail}")
+        return 0
     except Exception as e:
         logger.error(f"Error fetching from {url}: {e}")
+        await send_admin_alert(f"❌ خطا در دریافت ساب‌لینک: {str(e)}")
         return 0
+
+# ---------------------------------------------------------------------
+# 📥 تسک پس‌زمینه برای دریافت خودکار از ساب‌لینک‌ها
+# ---------------------------------------------------------------------
+async def background_subscription_fetcher():
+    while True:
+        await asyncio.sleep(3600)
+        try:
+            sources_res = await query_db("SELECT id, name, url FROM subscription_sources WHERE is_active = 1")
+            sources = get_rows(sources_res)
+            for s in sources:
+                count = await fetch_and_add_configs_from_source(s["id"])
+                if count > 0:
+                    await execute_db("UPDATE subscription_sources SET score = score + ? WHERE id = ?", count, s["id"])
+                    msg = f"🆕 کانفیگ جدید از ساب‌لینک «{s['name']}» استخراج شد. تعداد: {count}"
+                    await send_admin_alert(msg)
+                await asyncio.sleep(1)
+        except Exception as e:
+            logger.error(f"Background fetcher error: {e}")
 
 # ---------------------------------------------------------------------
 # 👤 توابع کاربر و ادمین
@@ -1225,7 +1246,7 @@ async def create_subscription_from_plan(plan_id, user_id):
     return token
 
 # ---------------------------------------------------------------------
-# 💬 مدیریت state ها
+# 💬 مدیریت state ها (با اصلاح دکمه دریافت دسته‌جمعی)
 # ---------------------------------------------------------------------
 async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_admin):
     text = message.get("text", "").strip()
@@ -1587,7 +1608,7 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
     return False
 
 # ---------------------------------------------------------------------
-# 📞 پردازش Callback
+# 📞 پردازش Callback (با اصلاح دکمه‌های دریافت و حذف پیام)
 # ---------------------------------------------------------------------
 async def process_callback(callback):
     cq_id = callback["id"]
@@ -1873,11 +1894,13 @@ async def process_callback(callback):
         proxy_id = int(data.replace("proxy_del_", ""))
         await execute_db("DELETE FROM proxies WHERE id = ?", proxy_id)
         await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "🗑 پروکسی حذف شد."})
+        # حذف پیام هشدار
         await call_telegram("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
         return
 
     if data.startswith("proxy_ignore_"):
         await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "⏳ پروکسی نادیده گرفته شد."})
+        # حذف پیام هشدار
         await call_telegram("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
         return
 
@@ -1885,20 +1908,6 @@ async def process_callback(callback):
     if data == "adm_batch_proxy_finish":
         await execute_db("UPDATE users SET state = NULL WHERE id = ?", user["id"])
         await edit_message(chat_id, message_id, "🔚 عملیات تست لیست پایان یافت.", reply_markup=get_admin_inline_keyboard())
-        return
-
-    # =============================================================
-    # ✅ دکمه تست و دریافت لیست (رفع کامل)
-    # =============================================================
-    if data == "adm_batch_proxy":
-        await execute_db("UPDATE users SET state = 'waiting_for_batch_proxy' WHERE id = ?", user["id"])
-        await call_telegram("sendMessage", {
-            "chat_id": chat_id,
-            "text": "📥 لطفاً لیست پروکسی‌ها را به‌صورت **متن** (هر خط یک آدرس) یا **فایل** (TXT/JSON) ارسال کنید.\n\nفرمت‌های پشتیبانی:\n- `ip:port` (پیش‌فرض HTTP)\n- `http://ip:port`\n- `socks4://ip:port`\n- `socks5://ip:port`\n- JSON با کلیدهای `ip_address` و `port`\n\nربات همه را تست می‌کند و فقط پروکسی‌های فعال ایرانی را اضافه می‌کند.",
-            "reply_markup": {"inline_keyboard": [[{"text": "🔙 لغو", "callback_data": "admin_return"}]]},
-            "parse_mode": "Markdown"
-        })
-        # پیام قبلی را حذف نمی‌کنیم تا کاربر گیج نشود
         return
 
     # ----- مدیریت کانفیگ‌ها (با حذف تکی) -----
@@ -1923,7 +1932,7 @@ async def process_callback(callback):
         await show_config_management(chat_id, message_id, page=1)
         return
 
-    # حذف تکی کانفیگ
+    # حذف تکی کانفیگ (با کالبک adm_cfg_del_immediate)
     if data.startswith("adm_cfg_del_immediate_"):
         parts = data.split("_")
         if len(parts) >= 5:
@@ -2136,4 +2145,442 @@ async def process_callback(callback):
     if data.startswith("adm_add_bal_") or data.startswith("adm_sub_bal_"):
         is_addition = "add" in data
         target_tg_id = data.replace("adm_add_bal_", "").replace("adm_sub_bal_", "")
-        state_val = f"waiting_for
+        state_val = f"waiting_for_add_{target_tg_id}" if is_addition else f"waiting_for_sub_{target_tg_id}"
+        await execute_db("UPDATE users SET state = ? WHERE id = ?", state_val, user["id"])
+        action_text = "افزایش" if is_addition else "کاهش"
+        await edit_message(chat_id, message_id, f"💵 میزان شارژ مایل به {action_text} (به تومان) را بفرستید:", reply_markup=get_back_markup(True))
+        return
+
+    # ----- مدیریت ساب‌لینک‌ها (با دکمه دریافت به‌جای وضعیت) -----
+    if data == "adm_manage_sub_sources":
+        if user.get("state") in ["waiting_sub_source_name", "waiting_sub_source_url"]:
+            await execute_db("UPDATE users SET state = NULL, plan_data = NULL WHERE id = ?", user["id"])
+        await show_sub_source_management(chat_id, message_id)
+        return
+
+    if data == "adm_add_sub_source":
+        await execute_db("UPDATE users SET state = NULL, plan_data = NULL WHERE id = ?", user["id"])
+        await execute_db("UPDATE users SET state = 'waiting_sub_source_name', plan_data = NULL WHERE id = ?", user["id"])
+        await edit_message(chat_id, message_id, STRINGS["sub_source_add_step1"], reply_markup={"inline_keyboard": [[{"text": "🔙 لغو", "callback_data": "adm_manage_sub_sources"}]]})
+        return
+
+    if data.startswith("adm_sub_edit_name_"):
+        source_id = data.replace("adm_sub_edit_name_", "")
+        await execute_db("UPDATE users SET state = ? WHERE id = ?", f"waiting_sub_source_edit_name_{source_id}", user["id"])
+        await edit_message(chat_id, message_id, STRINGS["sub_source_edit_name"], reply_markup={"inline_keyboard": [[{"text": "🔙 لغو", "callback_data": "adm_manage_sub_sources"}]]})
+        return
+
+    if data.startswith("adm_sub_edit_url_"):
+        source_id = data.replace("adm_sub_edit_url_", "")
+        await execute_db("UPDATE users SET state = ? WHERE id = ?", f"waiting_sub_source_edit_url_{source_id}", user["id"])
+        await edit_message(chat_id, message_id, STRINGS["sub_source_edit_url"], reply_markup={"inline_keyboard": [[{"text": "🔙 لغو", "callback_data": "adm_manage_sub_sources"}]]})
+        return
+
+    # دکمه دریافت از این ساب‌لینک (جایگزین دکمه وضعیت)
+    if data.startswith("adm_sub_fetch_"):
+        source_id = data.replace("adm_sub_fetch_", "")
+        # دریافت نام ساب‌لینک برای نمایش در پیام
+        source_res = await query_db("SELECT name FROM subscription_sources WHERE id = ?", source_id)
+        source_row = get_first_row(source_res)
+        source_name = source_row["name"] if source_row else f"#{source_id}"
+        await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id})
+        await edit_message(chat_id, message_id, f"⏳ در حال دریافت کانفیگ‌ها از ساب‌لینک «{source_name}»...")
+        count = await fetch_and_add_configs_from_source(source_id)
+        if count is None:
+            count = 0
+        # بعد از دریافت، نمایش نتیجه
+        if count > 0:
+            await edit_message(chat_id, message_id, STRINGS["sub_source_fetch_done"].format(count=count), reply_markup=get_admin_inline_keyboard())
+        else:
+            await edit_message(chat_id, message_id, "❌ هیچ کانفیگ جدیدی از این ساب‌لینک اضافه نشد.", reply_markup=get_admin_inline_keyboard())
+        return
+
+    if data.startswith("adm_sub_del_"):
+        source_id = data.replace("adm_sub_del_", "")
+        await execute_db("DELETE FROM subscription_sources WHERE id = ?", source_id)
+        await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "🗑 ساب‌لینک حذف شد."})
+        await show_sub_source_management(chat_id, message_id)
+        return
+
+    # دکمه دریافت از همه (با عنوان اختصاصی)
+    if data == "adm_sub_fetch_all":
+        await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id})
+        await edit_message(chat_id, message_id, STRINGS["sub_source_fetch_start"])
+        total_count = 0
+        sources_res = await query_db("SELECT id FROM subscription_sources WHERE is_active = 1")
+        sources = get_rows(sources_res)
+        for s in sources:
+            count = await fetch_and_add_configs_from_source(s["id"])
+            if count is not None:
+                total_count += count
+        await edit_message(chat_id, message_id, STRINGS["sub_source_fetch_done"].format(count=total_count), reply_markup=get_admin_inline_keyboard())
+        return
+
+    await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "❌ دستور نامعتبر", "show_alert": True})
+
+# ---------------------------------------------------------------------
+# توابع نمایش (با صفحه‌بندی و حذف تکی کانفیگ)
+# ---------------------------------------------------------------------
+async def show_proxy_management(chat_id, message_id=None, page=1):
+    limit = 5
+    offset = (page - 1) * limit
+    res = await query_db("SELECT id, name, address, type, is_active, score, last_latency, flap_count FROM proxies ORDER BY id DESC LIMIT ? OFFSET ?", limit, offset)
+    proxies = get_rows(res)
+    total_res = await query_db("SELECT COUNT(*) as cnt FROM proxies")
+    total_row = get_first_row(total_res)
+    total = total_row["cnt"] if total_row else 0
+    total_pages = (total + limit - 1) // limit
+
+    txt = STRINGS["proxy_list"].format(page=page, total_pages=total_pages)
+    if not proxies and page == 1:
+        txt += "🔌 هیچ پروکسی ثبت نشده است."
+    else:
+        for p in proxies:
+            status = "✅" if p["is_active"] else "❌"
+            score_str = f"امتیاز: {p['score']}" if p["is_active"] else "غیرفعال"
+            flap_str = f" | قطع/وصل: {p['flap_count']}" if p["flap_count"] > 0 else ""
+            txt += f"🆔 {p['id']} | {p['name']}\nآدرس: {p['type']}://{p['address']}\n{status} {score_str} | پینگ: {p['last_latency']}ms{flap_str}\n\n"
+
+    kb = []
+    if page > 1:
+        kb.append({"text": "◀️ قبلی", "callback_data": f"adm_manage_proxies_page_{page-1}"})
+    kb.append({"text": f"صفحه {page}/{total_pages}", "callback_data": "ignore"})
+    if page < total_pages:
+        kb.append({"text": "▶️ بعدی", "callback_data": f"adm_manage_proxies_page_{page+1}"})
+    row_nav = [kb] if kb else []
+
+    action_buttons = [
+        [{"text": "➕ افزودن پروکسی", "callback_data": "adm_add_proxy"}],
+        [{"text": "🧹 حذف غیرفعال‌ها", "callback_data": "adm_proxy_delete_inactive"}],
+        [{"text": "📥 تست و دریافت لیست", "callback_data": "adm_batch_proxy"}],
+        [{"text": "🔙 بازگشت", "callback_data": "admin_return"}]
+    ]
+    keyboard = row_nav + action_buttons
+
+    if message_id:
+        await edit_message(chat_id, message_id, txt, reply_markup={"inline_keyboard": keyboard}, parse_mode="Markdown")
+    else:
+        await call_telegram("sendMessage", {"chat_id": chat_id, "text": txt, "reply_markup": {"inline_keyboard": keyboard}, "parse_mode": "Markdown"})
+
+async def show_config_management(chat_id, message_id=None, page=1):
+    limit = 5
+    offset = (page - 1) * limit
+    res = await query_db("SELECT id, config_text, is_active FROM configs ORDER BY id DESC LIMIT ? OFFSET ?", limit, offset)
+    configs = get_rows(res)
+    total_res = await query_db("SELECT COUNT(*) as cnt FROM configs")
+    total_row = get_first_row(total_res)
+    total = total_row["cnt"] if total_row else 0
+    total_pages = (total + limit - 1) // limit
+
+    txt = f"📋 لیست کانفیگ‌ها (صفحه {page} از {total_pages}):\n\n"
+    if not configs and page == 1:
+        txt += "📋 هیچ کانفیگی موجود نیست."
+    else:
+        for c in configs:
+            name = extract_config_name(c["config_text"]) or f"🆔 {c['id']}"
+            txt += f"{name}\n\n"
+            if c['id'] != 0:
+                txt += f"🆔 {c['id']}\n"
+    kb = []
+    if page > 1:
+        kb.append({"text": "◀️ قبلی", "callback_data": f"adm_configs_page_{page-1}"})
+    kb.append({"text": f"صفحه {page}/{total_pages}", "callback_data": "ignore"})
+    if page < total_pages:
+        kb.append({"text": "▶️ بعدی", "callback_data": f"adm_configs_page_{page+1}"})
+    row_nav = [kb] if kb else []
+
+    # دکمه‌های اضافی: افزودن، حذف همه، بازگشت
+    action_buttons = [
+        [{"text": "➕ افزودن کانفیگ", "callback_data": "adm_add_config"}],
+        [{"text": "🗑 حذف همه کانفیگ‌ها", "callback_data": "adm_config_delete_all"}],
+        [{"text": "🔙 بازگشت", "callback_data": "admin_return"}]
+    ]
+
+    # دکمه‌های حذف تکی برای هر کانفیگ (به جز بنر)
+    delete_buttons = []
+    for c in configs:
+        if c['id'] != 0:
+            name = extract_config_name(c["config_text"]) or f"کانفیگ {c['id']}"
+            delete_buttons.append([{"text": f"🗑 حذف {name}", "callback_data": f"adm_cfg_del_immediate_{c['id']}_{page}"}])
+
+    keyboard = row_nav + delete_buttons + action_buttons
+    if message_id:
+        await edit_message(chat_id, message_id, txt, reply_markup={"inline_keyboard": keyboard}, parse_mode="Markdown")
+    else:
+        await call_telegram("sendMessage", {"chat_id": chat_id, "text": txt, "reply_markup": {"inline_keyboard": keyboard}, "parse_mode": "Markdown"})
+
+# بقیه توابع نمایش (پلن‌ها، ساب‌لینک‌ها با دکمه دریافت)
+async def show_plan_management(chat_id, message_id=None):
+    res = await query_db("SELECT * FROM plans ORDER BY id DESC")
+    plans = get_rows(res)
+    if not plans:
+        txt = STRINGS["no_plans"]
+        kb = [[{"text": "➕ افزودن پلن جدید", "callback_data": "adm_add_plan"}], [{"text": "🔙 بازگشت", "callback_data": "admin_return"}]]
+        if message_id:
+            await edit_message(chat_id, message_id, txt, reply_markup={"inline_keyboard": kb})
+        else:
+            await call_telegram("sendMessage", {"chat_id": chat_id, "text": txt, "reply_markup": {"inline_keyboard": kb}})
+    else:
+        txt = "📦 لیست پلن‌ها:\n\n"
+        kb = []
+        for p in plans:
+            txt += STRINGS["plan_list_item"].format(name=p["name"], price=p["price"], duration=p["duration_days"], max_users=p["max_users"]) + "\n\n"
+            kb.append([{"text": f"✏️ ویرایش {p['name']}", "callback_data": f"adm_plan_edit_{p['id']}"}])
+            kb.append([{"text": f"🗑 حذف {p['name']}", "callback_data": f"adm_plan_del_req_{p['id']}"}])
+        kb.append([{"text": "➕ افزودن پلن جدید", "callback_data": "adm_add_plan"}])
+        kb.append([{"text": "🔙 بازگشت", "callback_data": "admin_return"}])
+        if message_id:
+            await edit_message(chat_id, message_id, txt, reply_markup={"inline_keyboard": kb})
+        else:
+            await call_telegram("sendMessage", {"chat_id": chat_id, "text": txt, "reply_markup": {"inline_keyboard": kb}})
+
+async def show_sub_source_management(chat_id, message_id=None):
+    res = await query_db("SELECT * FROM subscription_sources ORDER BY id DESC")
+    sources = get_rows(res)
+    if not sources:
+        txt = "📡 هیچ ساب‌لینک خارجی ثبت نشده است."
+        kb = [[{"text": "➕ افزودن ساب‌لینک", "callback_data": "adm_add_sub_source"}], [{"text": "🔙 بازگشت", "callback_data": "admin_return"}]]
+    else:
+        txt = STRINGS["sub_source_list"]
+        kb = []
+        for s in sources:
+            status = "✅ فعال" if s["is_active"] else "❌ غیرفعال"
+            last_fetch = s["last_fetch"] or "هرگز"
+            txt += f"🆔 {s['id']} | نام: {s['name']}\nURL: {s['url']}\nوضعیت: {status} | آخرین دریافت: {last_fetch}\n\n"
+            # دکمه‌های عملیاتی (بدون دکمه وضعیت)
+            row = [
+                {"text": "✏️ نام", "callback_data": f"adm_sub_edit_name_{s['id']}"},
+                {"text": "✏️ URL", "callback_data": f"adm_sub_edit_url_{s['id']}"},
+                {"text": "📥 دریافت", "callback_data": f"adm_sub_fetch_{s['id']}"},
+                {"text": "🗑 حذف", "callback_data": f"adm_sub_del_{s['id']}"}
+            ]
+            kb.append(row)
+        kb.append([{"text": "➕ افزودن ساب‌لینک", "callback_data": "adm_add_sub_source"}])
+        kb.append([{"text": "📥 دریافت از همه", "callback_data": "adm_sub_fetch_all"}])
+        kb.append([{"text": "🔙 بازگشت", "callback_data": "admin_return"}])
+    if message_id:
+        await edit_message(chat_id, message_id, txt, reply_markup={"inline_keyboard": kb})
+    else:
+        await call_telegram("sendMessage", {"chat_id": chat_id, "text": txt, "reply_markup": {"inline_keyboard": kb}})
+
+async def show_status_dashboard(chat_id, message_id=None):
+    total_users = get_first_row(await query_db("SELECT COUNT(*) as cnt FROM users"))["cnt"] if get_first_row(await query_db("SELECT COUNT(*) as cnt FROM users")) else 0
+    premium_users = get_first_row(await query_db("SELECT COUNT(DISTINCT user_id) as cnt FROM subscriptions WHERE status = 'active'"))["cnt"] if get_first_row(await query_db("SELECT COUNT(DISTINCT user_id) as cnt FROM subscriptions WHERE status = 'active'")) else 0
+    configs_res = await query_db("SELECT id, speed_score FROM configs WHERE id != 0 AND is_active = 1 ORDER BY speed_score ASC LIMIT 3")
+    top_configs = get_rows(configs_res)
+    total_configs = get_first_row(await query_db("SELECT COUNT(*) as cnt FROM configs WHERE id != 0"))["cnt"] if get_first_row(await query_db("SELECT COUNT(*) as cnt FROM configs WHERE id != 0")) else 0
+    sources_res = await query_db("SELECT name, score FROM subscription_sources ORDER BY score DESC")
+    sources = get_rows(sources_res)
+    total_sources = len(sources)
+    total_proxies, active_proxies, inactive_proxies, weak_proxies = await get_proxy_count()
+
+    txt = f"📊 **داشبورد مدیریت ربات**\n\n"
+    txt += f"👥 **کاربران:**\n- کل کاربران: {total_users}\n- کاربران پرومکس: {premium_users}\n\n"
+    txt += f"📡 **کانفیگ‌ها:**\n- کل کانفیگ‌ها: {total_configs}\n- ۳ کانفیگ برتر (بر اساس سرعت):\n"
+    if top_configs:
+        for idx, cfg in enumerate(top_configs, 1):
+            cfg_text = (await query_db("SELECT config_text FROM configs WHERE id = ?", cfg["id"]))["result"][0]["results"][0]["config_text"]
+            code = extract_config_name(cfg_text) or cfg["id"]
+            txt += f"  {idx}. {code} (سرعت: {cfg['speed_score']}ms)\n"
+    else:
+        txt += "  (هیچ کانفیگی موجود نیست)\n"
+    txt += f"\n📚 **ساب‌لینک‌های خارجی:**\n- تعداد: {total_sources}\n"
+    for s in sources[:5]:
+        txt += f"  - {s['name']} (امتیاز: {s['score']})\n"
+    txt += f"\n🔌 **پروکسی‌های تست:**\n- کل: {total_proxies} | ✅ فعال: {active_proxies} | ❌ غیرفعال: {inactive_proxies} | ⚠️ ضعیف: {weak_proxies}\n"
+    proxies_res = await query_db("SELECT name, score, is_active FROM proxies ORDER BY score DESC LIMIT 5")
+    top_proxies = get_rows(proxies_res)
+    for p in top_proxies:
+        status = "✅" if p["is_active"] else "❌"
+        txt += f"  {status} {p['name']} (امتیاز: {p['score']})\n"
+
+    if active_proxies == 0:
+        txt += f"\n🚨 **هشدار:** هیچ پروکسی فعالی وجود ندارد. ربات در حالت ایمن است."
+    elif active_proxies == 1:
+        txt += f"\n⚠️ **هشدار:** فقط {active_proxies} پروکسی فعال باقی مانده است."
+
+    markup = {"inline_keyboard": [[{"text": "🔙 بازگشت", "callback_data": "admin_return"}]]}
+    if message_id:
+        await edit_message(chat_id, message_id, txt, reply_markup=markup, parse_mode="Markdown")
+    else:
+        await call_telegram("sendMessage", {"chat_id": chat_id, "text": txt, "parse_mode": "Markdown", "reply_markup": markup})
+
+# ---------------------------------------------------------------------
+# 📨 پردازش پیام
+# ---------------------------------------------------------------------
+async def process_message(message):
+    chat_id = message["chat"]["id"]
+    text = message.get("text", "").strip()
+    from_user = message.get("from", {})
+    telegram_id = str(from_user.get("id", ""))
+    if not telegram_id:
+        return
+    if text.startswith("/status") and is_admin(telegram_id):
+        await show_status_dashboard(chat_id, None)
+        return
+    if text.lower() in ["test", "تست"] and is_admin(telegram_id):
+        await execute_db("UPDATE users SET is_test_mode = 1 WHERE telegram_id = ?", telegram_id)
+        markup = await get_user_inline_keyboard(False)
+        await call_telegram("sendMessage", {"chat_id": chat_id, "text": "👤 شما در نمای کاربری (تست) هستید. برای بازگشت به مدیریت، کلمه «مدیریت» را ارسال کنید.", "reply_markup": markup})
+        return
+    if text.lower() in ["مدیریت", "admin"] and is_admin(telegram_id):
+        await execute_db("UPDATE users SET is_test_mode = 0 WHERE telegram_id = ?", telegram_id)
+        await show_admin_panel(chat_id)
+        return
+
+    referred_by = None
+    if text.startswith("/start ") and len(text.split()) > 1:
+        referred_by = text.split()[1]
+    user = await get_or_create_user(telegram_id, referred_by, from_user=from_user)
+    actual_is_admin = is_admin(telegram_id, user_data=None)
+    is_admin_user = is_admin(telegram_id, user_data=user)
+
+    if text.startswith("/start"):
+        user["state"] = None
+        user["plan_data"] = None
+        await execute_db("UPDATE users SET state = NULL, plan_data = NULL WHERE id = ?", user["id"])
+        await credit_referrer_if_pending(user, chat_id)
+        if is_admin_user:
+            await show_admin_panel(chat_id)
+        else:
+            markup = await get_user_inline_keyboard(actual_is_admin)
+            await call_telegram("sendMessage", {"chat_id": chat_id, "text": STRINGS["start_welcome"], "reply_markup": markup})
+        return
+
+    if actual_is_admin and message.get("reply_to_message"):
+        replied_text = message["reply_to_message"].get("text", "") or message["reply_to_message"].get("caption", "")
+        if "پیام از کاربر" in replied_text:
+            match = re.search(r"پیام از کاربر (\d+):", replied_text)
+            if match:
+                target_id = match.group(1)
+                payload = {"chat_id": target_id}
+                method = "sendMessage"
+                if text:
+                    payload["text"] = f"پاسخ پشتیبانی:\n\n{text}"
+                elif message.get("photo"):
+                    method = "sendPhoto"
+                    payload["photo"] = message["photo"][-1]["file_id"]
+                    payload["caption"] = f"پاسخ پشتیبانی:\n{message.get('caption', '')}"
+                elif message.get("document"):
+                    method = "sendDocument"
+                    payload["document"] = message["document"]["file_id"]
+                    payload["caption"] = f"پاسخ پشتیبانی:\n{message.get('caption', '')}"
+                await call_telegram(method, payload)
+                await call_telegram("sendMessage", {"chat_id": chat_id, "text": "✅ پاسخ شما به کاربر ارسال شد."})
+                return
+
+    if not await check_channel_membership(telegram_id, force_refresh=False):
+        await send_membership_requirement(chat_id)
+        return
+
+    state = user.get("state")
+    if state:
+        if await handle_state(user, state, message, chat_id, is_admin_user, actual_is_admin):
+            return
+
+    markup = get_admin_inline_keyboard() if is_admin_user else await get_user_inline_keyboard(actual_is_admin)
+    await call_telegram("sendMessage", {"chat_id": chat_id, "text": "❌ دستور ناشناس است. لطفاً از دکمه‌های منوی اصلی استفاده کنید.", "reply_markup": markup})
+
+# ---------------------------------------------------------------------
+# 🚀 تابع پردازش اصلی
+# ---------------------------------------------------------------------
+async def process_update(update):
+    try:
+        if "message" in update:
+            await process_message(update["message"])
+        elif "callback_query" in update:
+            await process_callback(update["callback_query"])
+    except Exception:
+        logger.error("Error in process_update:")
+        traceback.print_exc()
+
+# ---------------------------------------------------------------------
+# 🚀 سرور FastAPI
+# ---------------------------------------------------------------------
+app = FastAPI()
+
+@app.on_event("startup")
+async def startup_event():
+    global http_client
+    http_client = httpx.AsyncClient(limits=httpx.Limits(max_keepalive_connections=50, max_connections=100))
+    await init_database_if_needed()
+    asyncio.create_task(background_expiration_notifier())
+    asyncio.create_task(background_subscription_fetcher())
+    asyncio.create_task(background_proxy_checker())
+    asyncio.create_task(background_config_tester())
+    asyncio.create_task(background_daily_report())
+    logger.info("🚀 Bot Server Started! (CAT FINAL - All features integrated)")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    global http_client
+    if http_client:
+        await http_client.aclose()
+
+@app.post("/webhook")
+async def handle_webhook(request: Request):
+    update = await request.json()
+    asyncio.create_task(process_update(update))
+    return Response(content="OK", status_code=200)
+
+# =====================================================================
+# 🔥 سرویس ساب‌لینک (با اولویت‌بندی بر اساس سرعت)
+# =====================================================================
+@app.get("/sub/{token}")
+async def handle_sublink(token: str):
+    sub_res = await query_db("SELECT * FROM subscriptions WHERE token = ? AND status = 'active'", token)
+    sub = get_first_row(sub_res)
+    if not sub:
+        return Response(content="", media_type="text/plain")
+    expires_str = sub["expires_at"]
+    try:
+        expires_at = datetime.datetime.strptime(expires_str, "%Y-%m-%d %H:%M:%S")
+    except:
+        expires_at = datetime.datetime.strptime(expires_str.split(".")[0], "%Y-%m-%d %H:%M:%S")
+    now = datetime.datetime.utcnow()
+    if expires_at < now:
+        await execute_db("UPDATE subscriptions SET status = 'expired' WHERE id = ?", sub["id"])
+        return Response(content="", media_type="text/plain")
+    days_left = (expires_at - now).days
+    days_left_str = f"{days_left}روز" if days_left >= 0 else "منقضی"
+    plan_id = sub.get("plan_id")
+    if plan_id:
+        plan_res = await query_db("SELECT duration_days, max_users FROM plans WHERE id = ?", plan_id)
+        plan = get_first_row(plan_res)
+        if plan:
+            duration = plan.get("duration_days", 0)
+            max_users = plan.get("max_users", 1)
+            plan_title = f"⏳{days_left_str}👥{max_users}کاربره♾️نامحدود📆{duration}روزه"
+        else:
+            plan_title = f"⏳{days_left_str}نامشخص"
+    else:
+        plan_title = f"⏳{days_left_str}👤۱کاربره♾️نامحدود🎁تست۱روزه"
+    cache_key = "configs_payload"
+    cached_payload = await get_kv(cache_key)
+    if cached_payload is None:
+        cfg_res = await query_db("SELECT config_text FROM configs WHERE is_active = 1 AND id != 0 ORDER BY speed_score ASC")
+        confs = get_rows(cfg_res)
+        payload_lines = [c["config_text"].strip() for c in confs if c["config_text"].strip()]
+        combined = "\n".join(payload_lines)
+        cached_payload = base64.b64encode(combined.encode('utf-8')).decode('utf-8')
+        await put_kv(cache_key, cached_payload, expiration_ttl=300)
+    title_b64 = base64.b64encode(plan_title.encode('utf-8')).decode('utf-8')
+    safe_title = urllib.parse.quote(plan_title)
+    headers = {
+        "Cache-Control": "no-cache, no-store, must-revalidate",
+        "profile-title": f"base64:{title_b64}",
+        "profile-update-interval": "12",
+        "Subscription-Userinfo": f"upload=0; download=0; total=53687091200; expire={int(expires_at.timestamp())}",
+        "Content-Disposition": f"attachment; filename*=UTF-8''{safe_title}; filename=\"{safe_title}\""
+    }
+    return Response(content=cached_payload, media_type="text/plain", headers=headers)
+
+# ---------------------------------------------------------------------
+# پنل ادمین
+# ---------------------------------------------------------------------
+async def show_admin_panel(chat_id):
+    await call_telegram("sendMessage", {"chat_id": chat_id, "text": STRINGS["admin_panel"], "reply_markup": get_admin_inline_keyboard()})
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
