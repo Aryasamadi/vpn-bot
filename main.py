@@ -2192,7 +2192,6 @@ async def startup_event():
     global http_client
     http_client = httpx.AsyncClient(limits=httpx.Limits(max_keepalive_connections=50, max_connections=100))
     await init_database_if_needed()
-    asyncio.create_task(background_config_checker())
     asyncio.create_task(background_expiration_notifier())
     asyncio.create_task(background_subscription_fetcher())
     asyncio.create_task(background_proxy_checker())
