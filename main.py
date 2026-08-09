@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-ربات مدیریت ساب‌لینک – نسخه CAT FINAL (با رفع کامل خطاها و اضافه‌شدن تمام توابع)
+ربات مدیریت ساب‌لینک – نسخه CAT FINAL (با تمام اصلاحات درخواستی)
 - مدیریت پروکسی‌های HTTP/SOCKS4/SOCKS5 با صفحه‌بندی و نام‌گذاری ساده
 - تست کانفیگ‌ها از طریق پروکسی‌های ایران (اتصال TCP از طریق پروکسی)
 - دریافت ساب‌لینک فقط از طریق پروکسی‌های ایران
-- هشدارهای هوشمند با دکمه‌های حذف/نادیده گرفتن
+- هشدارهای هوشمند با دکمه‌های حذف/نادیده گرفتن (با حذف خودکار پیام پس از کلیک)
 - شمارش قطع/وصل شدن و حذف خودکار در بار ششم
 - ادغام مدیریت پروکسی و تست دسته‌جمعی
 - ارسال همگانی در تنظیمات
@@ -12,7 +12,9 @@
 - حالت کاربری با دستور «تست»
 - تشخیص تکراری پروکسی و کانفیگ
 - تست حجم با درخواست HTTP واقعی از طریق پروکسی
-- و تمام قابلیت‌های قبلی
+- چینش ۲-۲ در کیبوردها
+- حذف تکی کانفیگ‌ها در مدیریت کانفیگ
+- دکمه دریافت اختصاصی برای هر ساب‌لینک (به‌جای وضعیت)
 """
 
 import os
@@ -434,10 +436,6 @@ async def format_config_name(config_text):
 # 🔌 توابع مدیریت پروکسی (نسخه نهایی)
 # ---------------------------------------------------------------------
 async def test_proxy(proxy_address: str, proxy_type: str = "http") -> tuple:
-    """
-    تست یک پروکسی با ارسال درخواست به ip-api.com/json/ از طریق همان پروکسی
-    برمی‌گرداند: (success, country, latency_ms)
-    """
     try:
         proxy_url = f"{proxy_type}://{proxy_address}"
         start = time.time()
@@ -489,11 +487,9 @@ async def get_proxy_count():
     return total, active, inactive, weak
 
 async def generate_proxy_name():
-    """تولید نام ساده به‌صورت A1, A2, ..., A99, B1, ..."""
     counter = await get_setting("proxy_name_counter", "0")
     num = int(counter) + 1
     await set_setting("proxy_name_counter", str(num))
-    # تبدیل عدد به حروف: 1-26 -> A, 27-52 -> B, ...
     letter_index = (num - 1) // 26
     letter = chr(ord('A') + letter_index)
     number = (num - 1) % 26 + 1
@@ -507,11 +503,6 @@ async def is_duplicate_proxy(address: str, proxy_type: str):
 # 🧪 تست کانفیگ از طریق پروکسی (ورژن جدید)
 # ---------------------------------------------------------------------
 async def test_config_via_proxy(config_text: str, proxy: dict) -> tuple:
-    """
-    تست اتصال به کانفیگ از طریق پروکسی (TCP Connect via proxy)
-    با ارسال یک درخواست HTTP ساده به IP و پورت کانفیگ از طریق پروکسی.
-    اگر پاسخ (حتی خطا) دریافت شود، به‌معنی اتصال موفق است.
-    """
     ip = extract_ip_from_config(config_text)
     port = extract_port_from_config(config_text)
     if not ip:
@@ -524,22 +515,14 @@ async def test_config_via_proxy(config_text: str, proxy: dict) -> tuple:
         except Exception:
             client = httpx.AsyncClient(proxies={"all://": proxy_url}, timeout=8.0)
         async with client:
-            # تلاش برای اتصال به IP:port از طریق پروکسی با یک درخواست GET
             response = await client.get(f"http://{ip}:{port}/", timeout=8.0)
             latency = int((time.time() - start) * 1000)
-            # اگر هرگونه پاسخ (حتی ۴۰۴ یا ۴۰۰) دریافت شود، موفق است
             return True, latency
     except Exception as e:
-        # خطاهایی مثل timeout, connection refused به‌معنی عدم اتصال است
         logger.debug(f"Config test via proxy failed: {e}")
         return False, 0
 
 async def test_config_with_all_proxies(config_text: str) -> tuple:
-    """
-    تست کانفیگ با تمام پروکسی‌های فعال ایرانی.
-    اگر حداقل یک پروکسی موفق باشد، کانفیگ قبول می‌شود.
-    برمی‌گرداند: (success, avg_latency, success_count)
-    """
     proxies = await get_active_proxies()
     if not proxies:
         return False, 0, 0
@@ -562,7 +545,6 @@ async def test_config_with_all_proxies(config_text: str) -> tuple:
 def parse_proxy_list(raw_text: str) -> list:
     lines = raw_text.strip().splitlines()
     proxies = []
-    # تلاش برای پارس JSON
     try:
         data = json.loads(raw_text)
         if isinstance(data, list):
@@ -632,7 +614,7 @@ async def batch_test_proxies(proxy_list: list, max_concurrent: int = 20) -> dict
     }
 
 # ---------------------------------------------------------------------
-# 🗄️ مقداردهی اولیه دیتابیس (با ستون‌های جدید)
+# 🗄️ مقداردهی اولیه دیتابیس
 # ---------------------------------------------------------------------
 async def init_database_if_needed():
     tables = [
@@ -708,7 +690,6 @@ async def init_database_if_needed():
     for q in tables:
         await execute_db(q)
 
-    # اضافه کردن ستون‌های جدید برای نسخه‌های قدیمی
     for col in ["speed_score", "awaiting_retest"]:
         try:
             await execute_db(f"ALTER TABLE configs ADD COLUMN {col} INTEGER DEFAULT 0")
@@ -744,7 +725,7 @@ async def init_database_if_needed():
     logger.info("Database initialized/verified with all required tables")
 
 # ---------------------------------------------------------------------
-# 🔄 تسک‌های پس‌زمینه (با هشدارهای جدید)
+# 🔄 تسک‌های پس‌زمینه
 # ---------------------------------------------------------------------
 _last_proxy_alert_time = 0
 
@@ -765,24 +746,18 @@ async def background_proxy_checker():
                     new_active = new_row["is_active"]
                     new_latency = new_row["last_latency"]
                     flap_count = new_row.get("flap_count", 0)
-                    # تشخیص تغییر وضعیت
                     if old_active == 1 and new_active == 0:
-                        # غیرفعال شدن
                         flap_count += 1
                         await execute_db("UPDATE proxies SET flap_count = ? WHERE id = ?", flap_count, p["id"])
-                        # گزارش
                         msg = STRINGS["proxy_death_report"].format(name=p["name"], ping=new_latency)
-                        # اگر flap_count >= 6، حذف خودکار
                         if flap_count >= 6:
                             await execute_db("DELETE FROM proxies WHERE id = ?", p["id"])
                             msg += "\n" + STRINGS["proxy_flap_deleted"].format(name=p["name"])
                             await send_admin_alert(msg)
                         else:
-                            # ارسال پیام با دکمه‌های حذف/نادیده‌گرفتن
                             await send_proxy_flap_alert(p["id"], p["name"], flap_count, msg)
                     elif old_active == 0 and new_active == 1:
-                        # فعال شدن مجدد
-                        flap_count = 0  # ریست شمارش
+                        flap_count = 0
                         await execute_db("UPDATE proxies SET flap_count = 0 WHERE id = ?", p["id"])
                         msg = STRINGS["proxy_birth_report"].format(name=p["name"], ping=new_latency)
                         await send_admin_alert(msg)
@@ -805,9 +780,8 @@ async def background_proxy_checker():
             logger.error(f"Proxy checker error: {e}")
 
 async def send_proxy_flap_alert(proxy_id, name, flap_count, alert_text):
-    """ارسال پیام هشدار قطع/وصل با دکمه‌های حذف و نادیده گرفتن"""
     if flap_count >= 6:
-        return  # حذف خودکار انجام شده
+        return
     markup = {
         "inline_keyboard": [
             [{"text": "🗑 حذف", "callback_data": f"proxy_del_{proxy_id}"},
@@ -823,9 +797,6 @@ async def send_admin_alert(text, reply_markup=None, parse_mode="Markdown"):
     for admin_id in admins:
         await call_telegram("sendMessage", {"chat_id": int(admin_id), "text": text, "reply_markup": reply_markup, "parse_mode": parse_mode})
 
-# =====================================================================
-# 🟢 تسک یادآور انقضا (که قبلاً جا افتاده بود)
-# =====================================================================
 async def background_expiration_notifier():
     while True:
         await asyncio.sleep(15 * 60)
@@ -870,12 +841,9 @@ async def background_expiration_notifier():
         except Exception as e:
             logger.error(f"Notifier error: {e}")
 
-# ---------------------------------------------------------------------
-# ادامه تسک‌های پس‌زمینه
-# ---------------------------------------------------------------------
 async def background_config_tester():
     while True:
-        await asyncio.sleep(1800)  # ۳۰ دقیقه
+        await asyncio.sleep(1800)
         try:
             configs_res = await query_db("SELECT id, config_text FROM configs WHERE is_active = 1 AND id != 0")
             configs = get_rows(configs_res)
@@ -884,7 +852,6 @@ async def background_config_tester():
                 if success:
                     await execute_db("UPDATE configs SET speed_score = ?, fail_count = 0 WHERE id = ?", avg_latency, cfg["id"])
                 else:
-                    # اگر از همه پروکسی‌ها جواب نگرفت، کانفیگ را حذف کن
                     code = extract_config_name(cfg["config_text"]) or cfg["id"]
                     await execute_db("DELETE FROM configs WHERE id = ?", cfg["id"])
                     await delete_kv("configs_payload")
@@ -897,12 +864,10 @@ async def background_subscription_fetcher():
     while True:
         await asyncio.sleep(3600)
         try:
-            # فقط اگر حداقل یک پروکسی فعال وجود داشته باشد
             active_proxies = await get_active_proxies()
             if not active_proxies:
                 await send_admin_alert("⚠️ هیچ پروکسی فعالی برای دریافت ساب‌لینک وجود ندارد. عملیات متوقف شد.")
                 continue
-
             sources_res = await query_db("SELECT id, name, url FROM subscription_sources WHERE is_active = 1")
             sources = get_rows(sources_res)
             for s in sources:
@@ -938,13 +903,11 @@ async def fetch_and_add_configs_from_source(source_id):
         return 0
     url = row["url"]
 
-    # دریافت پروکسی فعال (حداقل یکی)
     proxies = await get_active_proxies()
     if not proxies:
         await send_admin_alert(f"⚠️ برای دریافت ساب‌لینک {url} هیچ پروکسی فعالی وجود ندارد.")
         return 0
 
-    # استفاده از اولین پروکسی فعال برای درخواست
     proxy = proxies[0]
     proxy_url = f"{proxy['type']}://{proxy['address']}"
     try:
@@ -958,7 +921,6 @@ async def fetch_and_add_configs_from_source(source_id):
                 logger.error(f"Failed to fetch {url}: status {response.status_code}")
                 return 0
             content = response.text
-            # تلاش برای دیکود base64
             try:
                 decoded = base64.b64decode(content).decode('utf-8')
             except:
@@ -969,7 +931,6 @@ async def fetch_and_add_configs_from_source(source_id):
                 if any(line.startswith(p) for p in ["vmess://", "vless://", "trojan://", "ss://", "ssr://"]):
                     if await is_duplicate_config(line):
                         continue
-                    # تست کانفیگ با پروکسی‌ها
                     success, avg_latency, _ = await test_config_with_all_proxies(line)
                     if success:
                         formatted = await format_config_name(line)
@@ -984,7 +945,7 @@ async def fetch_and_add_configs_from_source(source_id):
         return 0
 
 # ---------------------------------------------------------------------
-# 👤 توابع کاربر و ادمین (با تغییرات)
+# 👤 توابع کاربر و ادمین
 # ---------------------------------------------------------------------
 def is_admin(telegram_id, user_data=None):
     if not ADMIN_IDS:
@@ -1096,7 +1057,7 @@ async def build_sub_url_async(token: str) -> str:
     return full_url
 
 # ---------------------------------------------------------------------
-# 📋 کیبوردها (ساده‌شده)
+# 📋 کیبوردها (چینش ۲-۲ در پنل ادمین و منوی کاربری)
 # ---------------------------------------------------------------------
 async def get_user_inline_keyboard(is_actual_admin=False):
     kb = [
@@ -1117,10 +1078,8 @@ def get_admin_inline_keyboard():
     return {
         "inline_keyboard": [
             [{"text": "📦 پلن‌ها", "callback_data": "adm_manage_plans"}, {"text": "👤 کاربران", "callback_data": "adm_manage_users_1"}],
-            [{"text": "📋 کانفیگ‌ها", "callback_data": "adm_manage_configs"}],
-            [{"text": "📡 ساب‌لینک‌ها", "callback_data": "adm_manage_sub_sources"}],
-            [{"text": "🔌 پروکسی‌ها", "callback_data": "adm_manage_proxies"}],
-            [{"text": "⚙️ تنظیمات", "callback_data": "adm_settings"}]
+            [{"text": "📋 کانفیگ‌ها", "callback_data": "adm_manage_configs"}, {"text": "📡 ساب‌لینک‌ها", "callback_data": "adm_manage_sub_sources"}],
+            [{"text": "🔌 پروکسی‌ها", "callback_data": "adm_manage_proxies"}, {"text": "⚙️ تنظیمات", "callback_data": "adm_settings"}]
         ]
     }
 
@@ -1265,13 +1224,12 @@ async def create_subscription_from_plan(plan_id, user_id):
     return token
 
 # ---------------------------------------------------------------------
-# 💬 مدیریت state ها (با تغییرات عمده)
+# 💬 مدیریت state ها
 # ---------------------------------------------------------------------
 async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_admin):
     text = message.get("text", "").strip()
     message_id = message.get("message_id")
 
-    # خروج از حالت
     if text in ["❌ خروج / اتمام ارسال", "/cancel"]:
         await execute_db("UPDATE users SET state = NULL, plan_data = NULL WHERE id = ?", user["id"])
         await call_telegram("sendMessage", {"chat_id": chat_id, "text": "عملیات لغو شد."})
@@ -1283,9 +1241,8 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
         return True
 
     if is_admin_user:
-        # ---------- مدیریت دسته‌جمعی پروکسی (ادغام شده) ----------
+        # ---------- مدیریت دسته‌جمعی پروکسی ----------
         if state == "waiting_for_batch_proxy":
-            # اگر فایل ارسال شده
             if message.get("document"):
                 file_id = message["document"]["file_id"]
                 await call_telegram("sendMessage", {"chat_id": chat_id, "text": STRINGS["batch_file_processing"]})
@@ -1309,21 +1266,16 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
                     await call_telegram("sendMessage", {"chat_id": chat_id, "text": "❌ لطفاً یک متن یا فایل ارسال کنید."})
                     return True
 
-            # پردازش لیست
             proxy_list = parse_proxy_list(raw_text)
             if not proxy_list:
                 await call_telegram("sendMessage", {"chat_id": chat_id, "text": STRINGS["batch_test_no_result"]})
-                # همچنان در حالت باقی می‌مانیم
                 return True
 
             await call_telegram("sendMessage", {"chat_id": chat_id, "text": STRINGS["batch_test_start"].format(total=len(proxy_list), max_concurrent=20)})
             result = await batch_test_proxies(proxy_list)
 
-            # ذخیره پروکسی‌های قبول‌شده (با جلوگیری از تکراری و نام‌گذاری)
             for p in result["accepted"]:
-                # بررسی تکراری
                 if await is_duplicate_proxy(p["address"], p["type"]):
-                    # پیام تکراری می‌دهیم ولی ادامه می‌دهیم
                     await call_telegram("sendMessage", {"chat_id": chat_id, "text": STRINGS["proxy_duplicate"].format(address=p["address"], type=p["type"])})
                     continue
                 name = await generate_proxy_name()
@@ -1332,7 +1284,6 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
                     name, p["address"], p["type"], max(0, 100 - p["latency"] // 10)
                 )
 
-            # گزارش
             accepted_list = "\n".join([f"- {p['type']}://{p['address']} (تاخیر: {p['latency']}ms)" for p in result["accepted"]]) or "هیچ‌کدام"
             rejected_reasons = {}
             for r in result["rejected"]:
@@ -1351,7 +1302,6 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
                     rejected_reasons=reasons_str
                 )
 
-            # ارسال نتیجه و نگه‌داشتن حالت برای ادامه
             markup = {"inline_keyboard": [[{"text": "🔚 پایان و بازگشت", "callback_data": "adm_batch_proxy_finish"}]]}
             await call_telegram("sendMessage", {"chat_id": chat_id, "text": final_msg + "\n\n" + STRINGS["batch_continue"], "parse_mode": "Markdown", "reply_markup": markup})
             return True
@@ -1389,7 +1339,6 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
                 address = text[9:]
             elif text.startswith("http://"):
                 address = text[7:]
-            # بررسی تکراری
             if await is_duplicate_proxy(address, proxy_type):
                 await call_telegram("sendMessage", {"chat_id": chat_id, "text": STRINGS["proxy_duplicate"].format(address=address, type=proxy_type)})
                 return True
@@ -1398,7 +1347,6 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
                 name = await generate_proxy_name()
                 await execute_db("INSERT INTO proxies (name, address, type, is_active, score) VALUES (?, ?, ?, 1, ?)", name, address, proxy_type, max(0, 100 - latency // 10))
                 await call_telegram("sendMessage", {"chat_id": chat_id, "text": STRINGS["proxy_added"] + f"\n⚡ تاخیر: {latency}ms"})
-                # ادامه افزودن
                 await execute_db("UPDATE users SET state = 'waiting_for_proxy' WHERE id = ?", user["id"])
                 markup = {"inline_keyboard": [[{"text": "🔚 پایان افزودن", "callback_data": "adm_proxy_add_stop"}]]}
                 await call_telegram("sendMessage", {"chat_id": chat_id, "text": STRINGS["proxy_add_step1"], "reply_markup": markup})
@@ -1406,7 +1354,7 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
                 await call_telegram("sendMessage", {"chat_id": chat_id, "text": STRINGS["proxy_add_failed"] + (f" (کشور: {country})" if country else "")})
             return True
 
-        # ---------- بقیه state ها (کوتاه‌شده) ----------
+        # ---------- بقیه state ها (فشرده) ----------
         if state == "waiting_for_broadcast":
             if not text:
                 await call_telegram("sendMessage", {"chat_id": chat_id, "text": "❌ متن پیام نمی‌تواند خالی باشد. مجدداً ارسال کنید:"})
@@ -1628,7 +1576,6 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
 
         # ---------- ویرایش پلن ----------
         if state.startswith("waiting_plan_edit_"):
-            # برای اختصار، کد ویرایش پلن مشابه قبل است
             pass
 
     # ---------- حالت پشتیبانی ----------
@@ -1639,7 +1586,7 @@ async def handle_state(user, state, message, chat_id, is_admin_user, actual_is_a
     return False
 
 # ---------------------------------------------------------------------
-# 📞 پردازش Callback (با دکمه‌های جدید)
+# 📞 پردازش Callback
 # ---------------------------------------------------------------------
 async def process_callback(callback):
     cq_id = callback["id"]
@@ -1920,17 +1867,19 @@ async def process_callback(callback):
         await show_proxy_management(chat_id, message_id, page=1)
         return
 
-    # دکمه‌های حذف/نادیده‌گرفتن برای پروکسی‌های قطع/وصل
+    # دکمه‌های حذف/نادیده‌گرفتن پروکسی (با حذف پیام پس از کلیک)
     if data.startswith("proxy_del_"):
         proxy_id = int(data.replace("proxy_del_", ""))
         await execute_db("DELETE FROM proxies WHERE id = ?", proxy_id)
         await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "🗑 پروکسی حذف شد."})
+        # حذف پیام هشدار
+        await call_telegram("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
         return
 
     if data.startswith("proxy_ignore_"):
-        # فقط شمارنده را ریست نمی‌کنیم، بلکه فقط پیام را نادیده می‌گیریم و پروکسی باقی می‌ماند
         await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "⏳ پروکسی نادیده گرفته شد."})
-        # شمارنده را صفر نمی‌کنیم، چون اگر دوباره قطع شود، شمارش ادامه می‌یابد.
+        # حذف پیام هشدار
+        await call_telegram("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
         return
 
     # پایان حالت دسته‌جمعی
@@ -1939,7 +1888,7 @@ async def process_callback(callback):
         await edit_message(chat_id, message_id, "🔚 عملیات تست لیست پایان یافت.", reply_markup=get_admin_inline_keyboard())
         return
 
-    # ----- مدیریت کانفیگ‌ها (با دکمه حذف همه) -----
+    # ----- مدیریت کانفیگ‌ها (با حذف تکی) -----
     if data == "adm_manage_configs":
         await show_config_management(chat_id, message_id, page=1)
         return
@@ -1961,7 +1910,24 @@ async def process_callback(callback):
         await show_config_management(chat_id, message_id, page=1)
         return
 
-    # بقیه مدیریت کانفیگ (افزودن، حذف، و ...)
+    # حذف تکی کانفیگ (با کالبک adm_cfg_del_immediate)
+    if data.startswith("adm_cfg_del_immediate_"):
+        parts = data.split("_")
+        if len(parts) >= 5:
+            cfg_id = parts[4]
+            page = safe_int(parts[5], 1)
+        else:
+            cfg_id = data.replace("adm_cfg_del_immediate_", "")
+            page = 1
+        if int(cfg_id) == 0:
+            await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "❌ بنر دائمی قابل حذف نیست!", "show_alert": True})
+            return
+        await execute_db("DELETE FROM configs WHERE id = ?", cfg_id)
+        await delete_kv("configs_payload")
+        await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "✅ کانفیگ با موفقیت حذف شد."})
+        await show_config_management(chat_id, message_id, page=page)
+        return
+
     if data == "adm_add_config_stop":
         await execute_db("UPDATE users SET state = NULL, plan_data = NULL WHERE id = ?", user["id"])
         await edit_message(chat_id, message_id, STRINGS["config_add_stopped"], reply_markup=get_admin_inline_keyboard())
@@ -2071,7 +2037,7 @@ async def process_callback(callback):
         await edit_message(chat_id, message_id, settings_text, reply_markup=markup, parse_mode="Markdown")
         return
 
-    # بقیه تنظیمات (کانال، راهنما، داینامیک) مشابه قبل
+    # بقیه تنظیمات (کانال، راهنما، داینامیک)
     if data == "adm_set_channels":
         channels_str = await get_setting("force_channels", "")
         ch_list = [c.strip() for c in channels_str.split(",") if c.strip()]
@@ -2163,7 +2129,7 @@ async def process_callback(callback):
         await edit_message(chat_id, message_id, f"💵 میزان شارژ مایل به {action_text} (به تومان) را بفرستید:", reply_markup=get_back_markup(True))
         return
 
-    # ----- مدیریت ساب‌لینک‌ها -----
+    # ----- مدیریت ساب‌لینک‌ها (با دکمه دریافت به‌جای وضعیت) -----
     if data == "adm_manage_sub_sources":
         if user.get("state") in ["waiting_sub_source_name", "waiting_sub_source_url"]:
             await execute_db("UPDATE users SET state = NULL, plan_data = NULL WHERE id = ?", user["id"])
@@ -2188,17 +2154,17 @@ async def process_callback(callback):
         await edit_message(chat_id, message_id, STRINGS["sub_source_edit_url"], reply_markup={"inline_keyboard": [[{"text": "🔙 لغو", "callback_data": "adm_manage_sub_sources"}]]})
         return
 
-    if data.startswith("adm_sub_toggle_"):
-        source_id = data.replace("adm_sub_toggle_", "")
-        res = await query_db("SELECT is_active FROM subscription_sources WHERE id = ?", source_id)
-        row = get_first_row(res)
-        if row:
-            new_status = 1 if row["is_active"] == 0 else 0
-            await execute_db("UPDATE subscription_sources SET is_active = ? WHERE id = ?", new_status, source_id)
-            await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "✅ وضعیت تغییر کرد."})
-            await show_sub_source_management(chat_id, message_id)
-        else:
-            await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "❌ ساب‌لینک یافت نشد.", "show_alert": True})
+    # دکمه دریافت از این ساب‌لینک (جایگزین دکمه وضعیت)
+    if data.startswith("adm_sub_fetch_"):
+        source_id = data.replace("adm_sub_fetch_", "")
+        # دریافت نام ساب‌لینک برای نمایش در پیام
+        source_res = await query_db("SELECT name FROM subscription_sources WHERE id = ?", source_id)
+        source_row = get_first_row(source_res)
+        source_name = source_row["name"] if source_row else f"#{source_id}"
+        await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id})
+        await edit_message(chat_id, message_id, f"⏳ در حال دریافت کانفیگ‌ها از ساب‌لینک «{source_name}»...")
+        count = await fetch_and_add_configs_from_source(source_id)
+        await edit_message(chat_id, message_id, STRINGS["sub_source_fetch_done"].format(count=count), reply_markup=get_admin_inline_keyboard())
         return
 
     if data.startswith("adm_sub_del_"):
@@ -2208,14 +2174,7 @@ async def process_callback(callback):
         await show_sub_source_management(chat_id, message_id)
         return
 
-    if data.startswith("adm_sub_fetch_"):
-        source_id = data.replace("adm_sub_fetch_", "")
-        await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id})
-        await edit_message(chat_id, message_id, STRINGS["sub_source_fetch_start"])
-        count = await fetch_and_add_configs_from_source(source_id)
-        await edit_message(chat_id, message_id, STRINGS["sub_source_fetch_done"].format(count=count), reply_markup=get_admin_inline_keyboard())
-        return
-
+    # دکمه دریافت از همه (با عنوان اختصاصی)
     if data == "adm_sub_fetch_all":
         await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id})
         await edit_message(chat_id, message_id, STRINGS["sub_source_fetch_start"])
@@ -2231,7 +2190,7 @@ async def process_callback(callback):
     await call_telegram("answerCallbackQuery", {"callback_query_id": cq_id, "text": "❌ دستور نامعتبر", "show_alert": True})
 
 # ---------------------------------------------------------------------
-# توابع نمایش (با صفحه‌بندی)
+# توابع نمایش (با صفحه‌بندی و حذف تکی کانفیگ)
 # ---------------------------------------------------------------------
 async def show_proxy_management(chat_id, message_id=None, page=1):
     limit = 5
@@ -2300,18 +2259,28 @@ async def show_config_management(chat_id, message_id=None, page=1):
     if page < total_pages:
         kb.append({"text": "▶️ بعدی", "callback_data": f"adm_configs_page_{page+1}"})
     row_nav = [kb] if kb else []
+
+    # دکمه‌های اضافی: افزودن، حذف همه، بازگشت
     action_buttons = [
         [{"text": "➕ افزودن کانفیگ", "callback_data": "adm_add_config"}],
         [{"text": "🗑 حذف همه کانفیگ‌ها", "callback_data": "adm_config_delete_all"}],
         [{"text": "🔙 بازگشت", "callback_data": "admin_return"}]
     ]
-    keyboard = row_nav + action_buttons
+
+    # دکمه‌های حذف تکی برای هر کانفیگ (به جز بنر)
+    delete_buttons = []
+    for c in configs:
+        if c['id'] != 0:
+            name = extract_config_name(c["config_text"]) or f"کانفیگ {c['id']}"
+            delete_buttons.append([{"text": f"🗑 حذف {name}", "callback_data": f"adm_cfg_del_immediate_{c['id']}_{page}"}])
+
+    keyboard = row_nav + delete_buttons + action_buttons
     if message_id:
         await edit_message(chat_id, message_id, txt, reply_markup={"inline_keyboard": keyboard}, parse_mode="Markdown")
     else:
         await call_telegram("sendMessage", {"chat_id": chat_id, "text": txt, "reply_markup": {"inline_keyboard": keyboard}, "parse_mode": "Markdown"})
 
-# بقیه توابع نمایش (پلن‌ها، ساب‌لینک‌ها) مشابه قبل
+# بقیه توابع نمایش (پلن‌ها، ساب‌لینک‌ها با دکمه دریافت)
 async def show_plan_management(chat_id, message_id=None):
     res = await query_db("SELECT * FROM plans ORDER BY id DESC")
     plans = get_rows(res)
@@ -2349,9 +2318,14 @@ async def show_sub_source_management(chat_id, message_id=None):
             status = "✅ فعال" if s["is_active"] else "❌ غیرفعال"
             last_fetch = s["last_fetch"] or "هرگز"
             txt += f"🆔 {s['id']} | نام: {s['name']}\nURL: {s['url']}\nوضعیت: {status} | آخرین دریافت: {last_fetch}\n\n"
-            row = [{"text": "✏️ نام", "callback_data": f"adm_sub_edit_name_{s['id']}"}, {"text": "✏️ URL", "callback_data": f"adm_sub_edit_url_{s['id']}"}, {"text": "🔄 وضعیت", "callback_data": f"adm_sub_toggle_{s['id']}"}, {"text": "🗑 حذف", "callback_data": f"adm_sub_del_{s['id']}"}]
+            # دکمه‌های عملیاتی (بدون دکمه وضعیت)
+            row = [
+                {"text": "✏️ نام", "callback_data": f"adm_sub_edit_name_{s['id']}"},
+                {"text": "✏️ URL", "callback_data": f"adm_sub_edit_url_{s['id']}"},
+                {"text": "📥 دریافت", "callback_data": f"adm_sub_fetch_{s['id']}"},
+                {"text": "🗑 حذف", "callback_data": f"adm_sub_del_{s['id']}"}
+            ]
             kb.append(row)
-            kb.append([{"text": "📥 دریافت از این ساب‌لینک", "callback_data": f"adm_sub_fetch_{s['id']}"}])
         kb.append([{"text": "➕ افزودن ساب‌لینک", "callback_data": "adm_add_sub_source"}])
         kb.append([{"text": "📥 دریافت از همه", "callback_data": "adm_sub_fetch_all"}])
         kb.append([{"text": "🔙 بازگشت", "callback_data": "admin_return"}])
@@ -2361,7 +2335,6 @@ async def show_sub_source_management(chat_id, message_id=None):
         await call_telegram("sendMessage", {"chat_id": chat_id, "text": txt, "reply_markup": {"inline_keyboard": kb}})
 
 async def show_status_dashboard(chat_id, message_id=None):
-    # مشابه قبل
     total_users = get_first_row(await query_db("SELECT COUNT(*) as cnt FROM users"))["cnt"] if get_first_row(await query_db("SELECT COUNT(*) as cnt FROM users")) else 0
     premium_users = get_first_row(await query_db("SELECT COUNT(DISTINCT user_id) as cnt FROM subscriptions WHERE status = 'active'"))["cnt"] if get_first_row(await query_db("SELECT COUNT(DISTINCT user_id) as cnt FROM subscriptions WHERE status = 'active'")) else 0
     configs_res = await query_db("SELECT id, speed_score FROM configs WHERE id != 0 AND is_active = 1 ORDER BY speed_score ASC LIMIT 3")
@@ -2404,7 +2377,7 @@ async def show_status_dashboard(chat_id, message_id=None):
         await call_telegram("sendMessage", {"chat_id": chat_id, "text": txt, "parse_mode": "Markdown", "reply_markup": markup})
 
 # ---------------------------------------------------------------------
-# 📨 پردازش پیام (با اضافه شدن دستور test)
+# 📨 پردازش پیام
 # ---------------------------------------------------------------------
 async def process_message(message):
     chat_id = message["chat"]["id"]
@@ -2417,13 +2390,11 @@ async def process_message(message):
         await show_status_dashboard(chat_id, None)
         return
     if text.lower() in ["test", "تست"] and is_admin(telegram_id):
-        # وارد حالت کاربری
         await execute_db("UPDATE users SET is_test_mode = 1 WHERE telegram_id = ?", telegram_id)
         markup = await get_user_inline_keyboard(False)
         await call_telegram("sendMessage", {"chat_id": chat_id, "text": "👤 شما در نمای کاربری (تست) هستید. برای بازگشت به مدیریت، کلمه «مدیریت» را ارسال کنید.", "reply_markup": markup})
         return
     if text.lower() in ["مدیریت", "admin"] and is_admin(telegram_id):
-        # خروج از حالت کاربری
         await execute_db("UPDATE users SET is_test_mode = 0 WHERE telegram_id = ?", telegram_id)
         await show_admin_panel(chat_id)
         return
@@ -2504,7 +2475,6 @@ async def startup_event():
     global http_client
     http_client = httpx.AsyncClient(limits=httpx.Limits(max_keepalive_connections=50, max_connections=100))
     await init_database_if_needed()
-    # تمام تسک‌های پس‌زمینه
     asyncio.create_task(background_expiration_notifier())
     asyncio.create_task(background_subscription_fetcher())
     asyncio.create_task(background_proxy_checker())
