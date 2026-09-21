@@ -37,7 +37,7 @@ jobs:
           APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
         run: python main.py
 
-  restart:
+  ''' restart:
     if: always()
     needs: run-bot
     runs-on: ubuntu-latest
@@ -56,4 +56,4 @@ jobs:
         run: |
           gh workflow run bot.yml \
             --repo "${{ github.repository }}" \
-            --ref "${{ github.ref_name }}"
+            --ref "${{ github.ref_name }}"'''
