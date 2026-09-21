@@ -1,0 +1,59 @@
+name: Run VPN Bot
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run bot
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          ADMIN_IDS: ${{ secrets.ADMIN_IDS }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_D1_ID: ${{ secrets.CF_D1_ID }}
+          CF_KV_ID: ${{ secrets.CF_KV_ID }}
+          APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
+        run: python main.py
+
+  restart:
+    if: always()
+    needs: run-bot
+    runs-on: ubuntu-latest
+
+    permissions:
+      actions: write
+      contents: read
+
+    steps:
+      - name: Wait briefly before restart
+        run: sleep 10
+
+      - name: Restart bot workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run bot.yml \
+            --repo "${{ github.repository }}" \
+            --ref "${{ github.ref_name }}"
