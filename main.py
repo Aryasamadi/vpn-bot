@@ -1,23 +1,3 @@
-# -*- coding: utf-8 -*-
-"""
-ربات مدیریت ساب‌لینک – نسخه CAT FINAL (رفع کامل دکمه تست و دریافت)
-- مدیریت پروکسی‌های HTTP/SOCKS4/SOCKS5 با صفحه‌بندی و نام‌گذاری ساده
-- تست کانفیگ‌ها از طریق پروکسی‌های ایران (اتصال TCP از طریق پروکسی)
-- دریافت ساب‌لینک (در صورت نبود پروکسی، از اتصال مستقیم استفاده می‌کند)
-- هشدارهای هوشمند با دکمه‌های حذف/نادیده گرفتن (با حذف خودکار پیام پس از کلیک)
-- شمارش قطع/وصل شدن و حذف خودکار در بار ششم
-- ادغام مدیریت پروکسی و تست دسته‌جمعی
-- ارسال همگانی در تنظیمات
-- حذف دکمه‌های اضافی و ساده‌سازی عناوین
-- حالت کاربری با دستور «تست»
-- تشخیص تکراری پروکسی و کانفیگ
-- تست حجم با درخواست HTTP واقعی از طریق پروکسی
-- چینش ۲-۲ در کیبوردها
-- حذف تکی کانفیگ‌ها در مدیریت کانفیگ
-- دکمه دریافت اختصاصی برای هر ساب‌لینک (به‌جای وضعیت)
-- رفع خطای 400 با استفاده از اتصال مستقیم در صورت شکست پروکسی
-- رفع دکمه تست و دریافت لیست (استفاده از sendMessage به‌جای editMessage)
-"""
 
 import os
 import json
@@ -2498,13 +2478,62 @@ async def process_update(update):
         traceback.print_exc()
 
 # ---------------------------------------------------------------------
+# 🚀 Telegram Long Polling
+# ---------------------------------------------------------------------
+_telegram_polling_task = None
+
+async def telegram_polling_loop():
+    offset = None
+
+    delete_result = await call_telegram("deleteWebhook", {"drop_pending_updates": False})
+    if not delete_result.get("ok"):
+        logger.warning(f"Telegram deleteWebhook failed: {delete_result.get('description', 'unknown error')}")
+
+    while True:
+        try:
+            payload = {"timeout": 50, "limit": 100}
+            if offset is not None:
+                payload["offset"] = offset
+
+            url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
+            response = await http_client.post(url, json=payload, timeout=60.0)
+            data = response.json()
+
+            if not data.get("ok"):
+                description = data.get("description", "unknown error")
+                logger.warning(f"Telegram getUpdates failed: {description}")
+
+                if response.status_code == 409:
+                    await call_telegram("deleteWebhook", {"drop_pending_updates": False})
+
+                retry_after = data.get("parameters", {}).get("retry_after", 0)
+                await asyncio.sleep(max(2, min(int(retry_after or 0), 30)))
+                continue
+
+            updates = data.get("result", [])
+            for update in updates:
+                update_id = update.get("update_id")
+                try:
+                    await process_update(update)
+                finally:
+                    if update_id is not None:
+                        offset = update_id + 1
+
+        except asyncio.CancelledError:
+            logger.info("Telegram polling task cancelled.")
+            raise
+        except Exception as e:
+            logger.warning(f"Telegram polling error: {e}")
+            await asyncio.sleep(3)
+
+# ---------------------------------------------------------------------
 # 🚀 سرور FastAPI
 # ---------------------------------------------------------------------
 app = FastAPI()
 
 @app.on_event("startup")
 async def startup_event():
-    global http_client
+    global http_client, _telegram_polling_task
     http_client = httpx.AsyncClient(limits=httpx.Limits(max_keepalive_connections=50, max_connections=100))
     await init_database_if_needed()
     asyncio.create_task(background_expiration_notifier())
@@ -2512,11 +2541,19 @@ async def startup_event():
     asyncio.create_task(background_proxy_checker())
     asyncio.create_task(background_config_tester())
     asyncio.create_task(background_daily_report())
+    _telegram_polling_task = asyncio.create_task(telegram_polling_loop())
     logger.info("🚀 Bot Server Started! (CAT FINAL - All features integrated)")
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    global http_client
+    global http_client, _telegram_polling_task
+    if _telegram_polling_task:
+        _telegram_polling_task.cancel()
+        try:
+            await _telegram_polling_task
+        except asyncio.CancelledError:
+            pass
+        _telegram_polling_task = None
     if http_client:
         await http_client.aclose()
 
